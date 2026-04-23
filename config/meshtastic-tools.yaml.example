@@ -1,0 +1,72 @@
+# Meshtastic Tools Configuration
+# Copy this file to one of:
+#   /etc/meshtastic-tools/config.yaml
+#   ~/.config/meshtastic-tools/config.yaml
+#   ./config/meshtastic-tools.yaml
+
+# ============================================
+# Devices Configuration
+# ============================================
+devices:
+  # Example: Device connected via WiFi/TCP
+  home_station:
+    connection:
+      type: host           # host, port, or ble
+      address: 192.168.1.100
+      timeout: 30          # seconds
+    metadata:
+      description: "Home station in living room"
+      location: "Living Room"
+
+  # Example: Device connected via USB/Serial
+  # roof_node:
+  #   connection:
+  #     type: port
+  #     address: /dev/ttyUSB0
+  #     baudrate: 115200
+  #     timeout: 30
+  #   metadata:
+  #     description: "Node on the roof"
+
+  # Example: Device connected via Bluetooth
+  # mobile_node:
+  #   connection:
+  #     type: ble
+  #     address: "XX:XX:XX:XX:XX:XX"
+  #     timeout: 60
+
+# ============================================
+# Tools Configuration
+# ============================================
+tools:
+  # Logger Tool - collects data from devices on schedule
+  logger:
+    enabled: true
+    
+    # Storage settings
+    storage:
+      # Directory where data will be stored
+      # Device-specific subdirectories will be created automatically
+      data_dir: data/logger
+      
+      # Retention policy (can use one or both)
+      retention_days: 30     # Keep files for N days
+      max_files: 1000        # Keep at most N files per device
+      
+      # Filename format
+      # Available variables: {device}, {timestamp}
+      filename_format: "info_{device}_{timestamp}.txt"
+    
+    # Device-specific settings for logger
+    devices:
+      home_station:
+        enabled: true
+        schedule: "*/5 * * * *"   # Every 5 minutes
+        
+      # roof_node:
+      #   enabled: true
+      #   schedule: "0 * * * *"   # Every hour
+      
+      # mobile_node:
+      #   enabled: false
+      #   schedule: "*/10 * * * *"
