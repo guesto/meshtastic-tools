@@ -152,12 +152,12 @@ def run(
         else:
             try:
                 cron = croniter(schedule, now)
-                # Получаем предыдущее запланированное время (должно быть в прошлом)
+                # Get previous scheduled time
                 prev_time = cron.get_prev(datetime)
-                # Получаем следующее запланированное время
+                # Get next scheduled time
                 next_time = cron.get_next(datetime)
                 
-                # Вычисляем разницу в секундах между сейчас и предыдущим запуском
+                # Calculate seconds since previous scheduled run
                 time_since_prev = (now - prev_time).total_seconds()
                 
                 logger.debug(
@@ -169,9 +169,8 @@ def run(
                     time_since_prev=f"{time_since_prev:.0f}s",
                 )
                 
-                # Если мы в пределах 70 секунд от предыдущего запланированного времени — собираем
-                # (даём запас в 70 секунд на случай небольших задержек)
-                if time_since_prev <= 70:
+                # Collect only within 30 seconds of the scheduled time
+                if time_since_prev <= 30:
                     devices_to_collect.append(device_name)
                     logger.info(f"Device {device_name} is due for collection")
                 else:
@@ -182,7 +181,7 @@ def run(
                     
             except Exception as e:
                 logger.warning(f"Invalid schedule for {device_name}: {schedule} - {e}")
-                # По умолчанию собираем при ошибке расписания
+                # Default to collect on schedule error
                 devices_to_collect.append(device_name)
     
     if not devices_to_collect:

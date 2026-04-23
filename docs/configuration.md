@@ -105,11 +105,17 @@ Optional metadata:
 
 ## Cron Schedule Format
 
-*/5 * * * *   Every 5 minutes
-*/1 * * * *   Every minute
-0 * * * *     Every hour
-0 */6 * * *   Every 6 hours
-0 0 * * *     Daily at midnight
+The systemd timer triggers collection check every minute. 
+The cron expression defines when collection actually happens.
+
+Note: Collection cannot occur more than once per minute.
+
+Examples:
+- */5 * * * *   Every 5 minutes (recommended minimum)
+- */1 * * * *   Every minute (maximum frequency)
+- 0 * * * *     Every hour
+- 0 */6 * * *   Every 6 hours
+- 0 0 * * *     Daily at midnight
 
 ## Validation
 
