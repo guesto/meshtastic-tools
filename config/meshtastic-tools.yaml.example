@@ -47,7 +47,7 @@ tools:
     storage:
       # Directory where data will be stored
       # Device-specific subdirectories will be created automatically
-      data_dir: data/logger
+      data_dir: /opt/meshtastic-tools/data/logger
       
       # Retention policy (can use one or both)
       retention_days: 30     # Keep files for N days
