@@ -4,12 +4,13 @@ Configuration is shared across all tools in meshtastic-tools.
 
 ## Configuration File
 
-Main configuration file: /etc/meshtastic-tools/config.yaml
+Main configuration file: `/etc/meshtastic-tools/config.yaml`
 
-Example file: /opt/meshtastic-tools/config/meshtastic-tools.yaml.example
+Example file: `/opt/meshtastic-tools/config/meshtastic-tools.yaml.example`
 
 ## Full Configuration Example
 
+```yaml
 devices:
   home_station:
     connection:
@@ -59,54 +60,61 @@ tools:
       mobile_node:
         enabled: false
         schedule: "*/10 * * * *"
+```
 
 ## Connection Types
 
 ### host (TCP/IP)
+```yaml
 type: host
 address: 192.168.1.100
 timeout: 30
+```
 
 ### port (Serial/USB)
+```yaml
 type: port
 address: /dev/ttyUSB0
 baudrate: 115200
 timeout: 30
+```
 
 ### ble (Bluetooth)
+```yaml
 type: ble
 address: "XX:XX:XX:XX:XX:XX"
 timeout: 60
+```
 
 ## Device Settings
 
 Each device must have:
-- connection.type: host, port, or ble
-- connection.address: IP address, serial port, or MAC
-- connection.timeout: seconds (default: 30)
-- connection.baudrate: for serial only (optional)
+- `connection.type`: `host`, `port`, or `ble`
+- `connection.address`: IP address, serial port, or MAC address
+- `connection.timeout`: seconds (default: 30)
+- `connection.baudrate`: for serial only (optional)
 
 Optional metadata:
-- description: Human-readable description
-- location: Physical location
+- `description`: Human-readable description
+- `location`: Physical location
 - Any other custom fields
 
 ## Logger Tool Settings
 
 ### Storage
-- data_dir: Directory for collected data
-- retention_days: Delete files older than N days
-- max_files: Keep at most N files per device
-- filename_format: Pattern with {device} and {timestamp}
+- `data_dir`: Directory for collected data
+- `retention_days`: Delete files older than N days
+- `max_files`: Keep at most N files per device
+- `filename_format`: Pattern with `{device}` and `{timestamp}`
 
 ### Device Schedule
-- enabled: true/false
-- schedule: Cron expression
+- `enabled`: `true` or `false`
+- `schedule`: Cron expression
 
 ### Available Collectors
-- info: Full device information (nodes, channels, config)
-- telemetry: Battery, voltage, uptime, channel utilization
-- nodes: List of all nodes in mesh range
+- `info`: Full device information (nodes, channels, config)
+- `telemetry`: Battery, voltage, uptime, channel utilization
+- `nodes`: List of all nodes in mesh range
 
 ## Cron Schedule Format
 
@@ -116,15 +124,18 @@ The cron expression defines when collection actually happens.
 Note: Collection cannot occur more than once per minute.
 
 Examples:
-- */5 * * * *   Every 5 minutes (recommended minimum)
-- */1 * * * *   Every minute (maximum frequency)
-- 0 * * * *     Every hour
-- 0 */6 * * *   Every 6 hours
-- 0 0 * * *     Daily at midnight
+- `*/5 * * * *` — Every 5 minutes (recommended minimum)
+- `*/1 * * * *` — Every minute (maximum frequency)
+- `0 * * * *` — Every hour
+- `0 */6 * * *` — Every 6 hours
+- `0 0 * * *` — Daily at midnight
 
 ## Validation
 
+```
 meshtastic-tools config-validate
 meshtastic-tools config-show
 meshtastic-tools config-show --section devices
 meshtastic-tools config-show --section tools
+meshtastic-tools config-path
+```
