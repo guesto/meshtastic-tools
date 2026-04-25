@@ -157,7 +157,9 @@ def run(
             prev_time = cron.get_prev(datetime)
             next_time = cron.get_next(datetime)
             
-            time_since_prev = (now - prev_time).total_seconds()
+            distance_to_prev = abs((now - prev_time).total_seconds())
+            distance_to_next = abs((next_time - now).total_seconds())
+            closest_distance = min(distance_to_prev, distance_to_next)
             
             logger.debug(
                 f"Schedule check for {device_name}",
@@ -165,10 +167,12 @@ def run(
                 now=now.strftime("%H:%M:%S"),
                 prev=prev_time.strftime("%H:%M:%S"),
                 next=next_time.strftime("%H:%M:%S"),
-                time_since_prev=f"{time_since_prev:.0f}s",
+                dist_prev=f"{distance_to_prev:.0f}s",
+                dist_next=f"{distance_to_next:.0f}s",
+                closest=f"{closest_distance:.0f}s",
             )
             
-            if time_since_prev <= tolerance:
+            if closest_distance <= tolerance:
                 devices_to_collect.append(device_name)
                 logger.info(f"Device {device_name} is due for collection")
             else:
@@ -207,7 +211,7 @@ def run(
             logger.error(f"Collection failed for {device_name}", error=str(e))
         except Exception as e:
             logger.error(f"Unexpected error for {device_name}", error=str(e))
-
+            
 @storage_app.command("list")
 def storage_list(
     device: Optional[str] = typer.Option(None, "--device", "-d", help="Device name"),
