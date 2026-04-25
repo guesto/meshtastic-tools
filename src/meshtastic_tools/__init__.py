@@ -1,6 +1,6 @@
 """Meshtastic Tools - Collection of utilities for Meshtastic devices."""
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 __author__ = "Guesto"
 
 from meshtastic_tools.core.exceptions import (

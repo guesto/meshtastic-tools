@@ -118,7 +118,6 @@ def collect(
     
     typer.echo(f"\n  Collected from {success_count}/{len(devices_to_collect)} devices")
 
-
 @logger_app.command()
 def run(
     force: bool = typer.Option(False, "--force", "-f", help="Ignore schedule and collect immediately"),
@@ -194,13 +193,6 @@ def run(
     for device_name in devices_to_collect:
         try:
             device_manager = registry.get_manager(device_name)
-            
-            if not force:
-                success, msg = device_manager.test_connection()
-                if not success:
-                    logger.warning(f"Connection check failed for {device_name}: {msg}")
-                    continue
-            
             device_storage = storage_manager.get_device_manager(device_name)
             collector = MeshtasticCollector(device_manager, device_storage)
             
@@ -211,7 +203,7 @@ def run(
             logger.error(f"Collection failed for {device_name}", error=str(e))
         except Exception as e:
             logger.error(f"Unexpected error for {device_name}", error=str(e))
-            
+
 @storage_app.command("list")
 def storage_list(
     device: Optional[str] = typer.Option(None, "--device", "-d", help="Device name"),
