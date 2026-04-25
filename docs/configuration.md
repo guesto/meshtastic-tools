@@ -103,6 +103,11 @@ Optional metadata:
 - enabled: true/false
 - schedule: Cron expression
 
+### Available Collectors
+- info: Full device information (nodes, channels, config)
+- telemetry: Battery, voltage, uptime, channel utilization
+- nodes: List of all nodes in mesh range
+
 ## Cron Schedule Format
 
 The systemd timer triggers collection check every minute. 

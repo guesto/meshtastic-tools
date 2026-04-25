@@ -63,7 +63,7 @@ class MeshtasticCollector:
     
     def collect_telemetry(self) -> Path:
         """
-        Collect --telemetry data from device.
+        Collect --request-telemetry data from device.
         
         Returns:
             Path to saved file
@@ -74,7 +74,13 @@ class MeshtasticCollector:
         self.logger.info(f"Collecting telemetry from {self.device.name}")
         
         try:
-            result = self.device.execute_command(["--telemetry"])
+            # Get device info to obtain node ID
+            device_info = self.device.get_info()
+            
+            # Request telemetry using node ID as destination
+            result = self.device.execute_command(
+                ["--request-telemetry", "--dest", device_info.node_id]
+            )
             
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             filename = f"telemetry_{self.device.name}_{timestamp}.txt"
@@ -120,33 +126,3 @@ class MeshtasticCollector:
             
         except ConnectionError as e:
             raise CollectionError(f"Failed to collect nodes from {self.device.name}: {e}")
-    
-    def collect_position(self) -> Path:
-        """
-        Collect --position data from device.
-        
-        Returns:
-            Path to saved file
-            
-        Raises:
-            CollectionError: If collection fails
-        """
-        self.logger.info(f"Collecting position from {self.device.name}")
-        
-        try:
-            result = self.device.execute_command(["--position"])
-            
-            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            filename = f"position_{self.device.name}_{timestamp}.txt"
-            
-            filepath = self.storage.save(result.stdout, filename)
-            
-            self.logger.info(
-                f"Position collected from {self.device.name}",
-                file=filepath.name,
-            )
-            
-            return filepath
-            
-        except ConnectionError as e:
-            raise CollectionError(f"Failed to collect position from {self.device.name}: {e}")

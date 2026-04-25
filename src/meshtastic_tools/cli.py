@@ -95,7 +95,7 @@ def config_validate():
     try:
         manager.load()
     except Exception as e:
-        typer.echo(f"❌ Config error: {e}", err=True)
+        typer.echo(f"✗ Config error: {e}", err=True)
         raise typer.Exit(code=1)
     
     warnings = manager.validate()
@@ -195,8 +195,9 @@ def devices_list(
 
 @app.command()
 def devices_show(
-    device: str = typer.Argument(..., help="Device name"),
+    device: str = typer.Option(..., "--device", "-d", help="Device name"),
     refresh: bool = typer.Option(False, "--refresh", "-r", help="Force refresh info"),
+    telemetry: bool = typer.Option(False, "--telemetry", "-t", help="Also show device telemetry"),
 ):
     """Show detailed information about a device."""
     manager = ConfigManager()
@@ -254,7 +255,18 @@ def devices_show(
         typer.echo(f"    Reboot Count: {info.reboot_count}")
         typer.echo(f"    Bluetooth: {'✓' if info.has_bluetooth else '✗'}")
         typer.echo(f"    WiFi: {'✓' if info.has_wifi else '✗'}")
-        
+
+        # Show telemetry if requested
+        if telemetry:
+            try:
+                typer.echo("\n  Telemetry:")
+                telemetry_result = device_manager.execute_command(
+                    ["--request-telemetry", "--dest", info.node_id]
+                )
+                typer.echo(f"    {telemetry_result.stdout.strip()}")
+            except Exception as e:
+                typer.echo(f"    Could not fetch telemetry: {e}")
+
     except Exception as e:
         typer.echo(f"\n  [WARN]  Could not fetch device info: {e}", err=True)
 
@@ -314,10 +326,9 @@ def devices_check(
         
         typer.echo(f"\n  {success_count}/{len(devices)} devices connected")
 
-
 @app.command()
 def devices_test(
-    device: str = typer.Argument(..., help="Device name"),
+    device: str = typer.Option(..., "--device", "-d", help="Device name"),
 ):
     """Test connection and show raw info output."""
     manager = ConfigManager()
