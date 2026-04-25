@@ -142,6 +142,7 @@ def run(
         return
     
     now = datetime.now()
+    tolerance = getattr(logger_config, 'schedule_tolerance', 55)
     devices_to_collect = []
     
     for device_name in enabled_devices:
@@ -149,43 +150,39 @@ def run(
         
         if force or not schedule:
             devices_to_collect.append(device_name)
-        else:
-            try:
-                cron = croniter(schedule, now)
-                # Get previous scheduled time
-                prev_time = cron.get_prev(datetime)
-                # Get next scheduled time
-                next_time = cron.get_next(datetime)
-                
-                # Calculate seconds since previous scheduled run
-                time_since_prev = (now - prev_time).total_seconds()
-                
+            continue
+        
+        try:
+            cron = croniter(schedule, now)
+            prev_time = cron.get_prev(datetime)
+            next_time = cron.get_next(datetime)
+            
+            time_since_prev = (now - prev_time).total_seconds()
+            
+            logger.debug(
+                f"Schedule check for {device_name}",
+                schedule=schedule,
+                now=now.strftime("%H:%M:%S"),
+                prev=prev_time.strftime("%H:%M:%S"),
+                next=next_time.strftime("%H:%M:%S"),
+                time_since_prev=f"{time_since_prev:.0f}s",
+            )
+            
+            if time_since_prev <= tolerance:
+                devices_to_collect.append(device_name)
+                logger.info(f"Device {device_name} is due for collection")
+            else:
                 logger.debug(
-                    f"Schedule check for {device_name}",
-                    schedule=schedule,
-                    now=now.strftime("%H:%M:%S"),
-                    prev=prev_time.strftime("%H:%M:%S"),
+                    f"Device {device_name} not due yet",
                     next=next_time.strftime("%H:%M:%S"),
-                    time_since_prev=f"{time_since_prev:.0f}s",
                 )
                 
-                # Collect only within 30 seconds of the scheduled time
-                if time_since_prev <= 30:
-                    devices_to_collect.append(device_name)
-                    logger.info(f"Device {device_name} is due for collection")
-                else:
-                    logger.info(
-                        f"Device {device_name} not due yet",
-                        next=next_time.strftime("%H:%M:%S"),
-                    )
-                    
-            except Exception as e:
-                logger.warning(f"Invalid schedule for {device_name}: {schedule} - {e}")
-                # Default to collect on schedule error
-                devices_to_collect.append(device_name)
+        except Exception as e:
+            logger.warning(f"Invalid schedule for {device_name}: {schedule} - {e}")
+            devices_to_collect.append(device_name)
     
     if not devices_to_collect:
-        logger.info("No devices due for collection")
+        logger.debug("No devices due for collection, skipping connection checks")
         return
     
     logger.info(f"Running scheduled collection for {len(devices_to_collect)} device(s)")
@@ -193,6 +190,13 @@ def run(
     for device_name in devices_to_collect:
         try:
             device_manager = registry.get_manager(device_name)
+            
+            if not force:
+                success, msg = device_manager.test_connection()
+                if not success:
+                    logger.warning(f"Connection check failed for {device_name}: {msg}")
+                    continue
+            
             device_storage = storage_manager.get_device_manager(device_name)
             collector = MeshtasticCollector(device_manager, device_storage)
             

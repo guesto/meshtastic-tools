@@ -13,7 +13,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError as PydanticVa
 from meshtastic_tools.core.exceptions import ConfigError, ValidationError
 
 
-# Load environment variables
 load_dotenv()
 
 
@@ -70,14 +69,30 @@ class ConnectionConfig:
         """Create from dictionary with validation."""
         try:
             validated = PydanticConnectionConfig(**data)
-            return cls(
-                type=validated.type,
-                address=validated.address,
-                timeout=validated.timeout,
-                baudrate=validated.baudrate,
-            )
         except PydanticValidationError as e:
             raise ValidationError(f"Invalid connection configuration: {e}")
+        
+        if not validated.address or not validated.address.strip():
+            raise ValidationError(
+                f"Connection address is empty for type '{validated.type}'"
+            )
+        
+        if validated.type == ConnectionType.HOST:
+            if not validated.address:
+                raise ValidationError("Host connection requires a valid IP address or hostname")
+        elif validated.type == ConnectionType.PORT:
+            if not validated.address:
+                raise ValidationError("Serial port connection requires a valid port path")
+        elif validated.type == ConnectionType.BLE:
+            if not validated.address:
+                raise ValidationError("BLE connection requires a valid address")
+        
+        return cls(
+            type=validated.type,
+            address=validated.address,
+            timeout=validated.timeout,
+            baudrate=validated.baudrate,
+        )
     
     def get_cli_args(self) -> List[str]:
         """Get command line arguments for meshtastic CLI."""
@@ -97,7 +112,7 @@ class ConnectionConfig:
 @dataclass
 class DeviceConfig:
     """Device configuration."""
-    name: str  # The key from devices dict
+    name: str
     connection: ConnectionConfig
     metadata: Dict[str, Any] = field(default_factory=dict)
     
@@ -106,13 +121,20 @@ class DeviceConfig:
         """Create from dictionary with validation."""
         try:
             validated = PydanticDeviceConfig(**data)
-            return cls(
-                name=name,
-                connection=ConnectionConfig.from_dict(validated.connection.model_dump()),
-                metadata=validated.metadata,
-            )
         except PydanticValidationError as e:
             raise ValidationError(f"Invalid device configuration for '{name}': {e}")
+        
+        if 'connection' not in data:
+            raise ValidationError(
+                f"Device '{name}' is missing required 'connection' section. "
+                f"Please specify connection type (host/port/ble) and address."
+            )
+        
+        return cls(
+            name=name,
+            connection=ConnectionConfig.from_dict(validated.connection.model_dump()),
+            metadata=validated.metadata,
+        )
 
 
 @dataclass
@@ -178,15 +200,17 @@ class ConfigManager:
         Path.cwd() / "config" / "meshtastic-tools.yaml",
     ]
     
-    def __init__(self, config_path: Optional[Path] = None):
+    def __init__(self, config_path: Optional[Path] = None, strict: bool = False):
         """
         Initialize configuration manager.
         
         Args:
             config_path: Optional explicit config path. If not provided,
                         searches in default locations.
+            strict: If True, raise on first invalid device instead of skipping.
         """
         self.config_path = config_path
+        self.strict = strict
         self._config: Dict[str, Any] = {}
         self._devices: Dict[str, DeviceConfig] = {}
         self._logger_config: Optional[LoggerToolConfig] = None
@@ -195,7 +219,6 @@ class ConfigManager:
         """Load configuration from files."""
         paths_to_try = [self.config_path] if self.config_path else self.DEFAULT_CONFIG_PATHS
         
-        # Check environment variable
         env_config = os.getenv("MESHTASTIC_TOOLS_CONFIG")
         if env_config:
             paths_to_try.insert(0, Path(env_config))
@@ -212,13 +235,9 @@ class ConfigManager:
                     raise ConfigError(f"Failed to load config from {path}: {e}")
         
         if not config_loaded:
-            # Create default config if none found
             self._create_default_config()
         
-        # Parse devices
         self._parse_devices()
-        
-        # Parse logger tool config
         self._parse_logger_config()
     
     def _create_default_config(self) -> None:
@@ -240,13 +259,70 @@ class ConfigManager:
         }
     
     def _parse_devices(self) -> None:
-        """Parse devices section."""
+        """Parse devices section with validation."""
         devices_data = self._config.get("devices", {})
+        
+        if not isinstance(devices_data, dict):
+            raise ConfigError("'devices' section must be a dictionary")
+        
         for name, data in devices_data.items():
+            if not isinstance(data, dict):
+                msg = f"Device '{name}' configuration must be a dictionary"
+                if self.strict:
+                    raise ConfigError(msg)
+                import logging
+                logging.warning(msg)
+                continue
+            
+            if 'connection' not in data:
+                msg = (
+                    f"Device '{name}' is missing required 'connection' section. "
+                    f"Please specify connection type (host/port/ble) and address."
+                )
+                if self.strict:
+                    raise ConfigError(msg)
+                import logging
+                logging.warning(msg)
+                continue
+            
+            conn_data = data.get('connection', {})
+            if not isinstance(conn_data, dict):
+                msg = f"Device '{name}' connection must be a dictionary"
+                if self.strict:
+                    raise ConfigError(msg)
+                import logging
+                logging.warning(msg)
+                continue
+            
+            conn_type = conn_data.get('type')
+            if not conn_type:
+                msg = (
+                    f"Device '{name}' connection missing 'type'. "
+                    f"Must be one of: host, port, ble"
+                )
+                if self.strict:
+                    raise ConfigError(msg)
+                import logging
+                logging.warning(msg)
+                continue
+            
+            valid_types = [t.value for t in ConnectionType]
+            if conn_type not in valid_types:
+                msg = (
+                    f"Device '{name}' has invalid connection type '{conn_type}'. "
+                    f"Must be one of: {', '.join(valid_types)}"
+                )
+                if self.strict:
+                    raise ConfigError(msg)
+                import logging
+                logging.warning(msg)
+                continue
+            
             try:
                 self._devices[name] = DeviceConfig.from_dict(name, data)
             except ValidationError as e:
-                # Log warning but continue
+                if self.strict:
+                    raise ConfigError(str(e))
                 import logging
                 logging.warning(f"Skipping invalid device '{name}': {e}")
     
@@ -295,13 +371,39 @@ class ConfigManager:
         if not self._devices:
             warnings.append("No devices configured")
         
-        for name in self._devices:
-            # Check if device is referenced in logger config
+        for name, device in self._devices.items():
+            if not device.connection.address or not device.connection.address.strip():
+                warnings.append(
+                    f"Device '{name}' has empty connection address"
+                )
+            
+            if not device.connection.type:
+                warnings.append(
+                    f"Device '{name}' has no connection type specified"
+                )
+            
+            if device.connection.type == ConnectionType.PORT:
+                port = device.connection.address
+                if not port.startswith('/') and not port.startswith('COM'):
+                    warnings.append(
+                        f"Device '{name}' port '{port}' doesn't look like a valid serial port"
+                    )
+            
             if self._logger_config and self._logger_config.enabled:
                 if name in self._logger_config.devices:
                     if not self._logger_config.devices[name].get("schedule"):
                         warnings.append(f"Device '{name}' has no schedule configured")
                 else:
                     warnings.append(f"Device '{name}' not configured in logger tool")
+        
+        if self._logger_config and self._logger_config.enabled:
+            if not self._logger_config.storage.data_dir:
+                warnings.append("Logger storage data_dir is not set")
+            
+            for dev_name in self._logger_config.devices:
+                if dev_name not in self._devices:
+                    warnings.append(
+                        f"Logger references device '{dev_name}' which is not defined in devices section"
+                    )
         
         return warnings

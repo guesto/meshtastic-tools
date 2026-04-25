@@ -17,7 +17,7 @@ class DeviceInfo:
     """Information about a Meshtastic device parsed from --info output."""
     
     my_node_num: int
-    node_id: str  # !1ba5a19c
+    node_id: str # !a1b2c3d4
     long_name: str
     short_name: str
     firmware_version: str
@@ -43,44 +43,64 @@ class DeviceInfo:
         """
         logger = get_logger(__name__)
         
-        # Parse myNodeNum
-        my_node_match = re.search(r'"myNodeNum":\s*(\d+)', output)
-        if not my_node_match:
-            raise ValueError("Could not find 'myNodeNum' in output")
-        my_node_num = int(my_node_match.group(1))
+        parsed_json = {}
+        try:
+            start = output.find('{')
+            end = output.rfind('}')
+            if start != -1 and end != -1:
+                json_candidate = output[start:end+1]
+                parsed_json = json.loads(json_candidate)
+                logger.debug("Successfully parsed info output as JSON")
+        except json.JSONDecodeError:
+            logger.debug("Info output is not pure JSON, falling back to regex parsing")
         
-        # Parse rebootCount
-        reboot_match = re.search(r'"rebootCount":\s*(\d+)', output)
-        reboot_count = int(reboot_match.group(1)) if reboot_match else 0
+        def _get_field(json_key: str, regex_pattern: str, default=None, required: bool = False):
+            if parsed_json and json_key in parsed_json:
+                return parsed_json[json_key]
+            
+            match = re.search(regex_pattern, output)
+            if match:
+                return match.group(1)
+            
+            if required:
+                raise ValueError(f"Required field '{json_key}' not found in info output")
+            return default
         
-        # Parse Owner line: "Owner: Meshtastic a19c (a19c)"
-        owner_match = re.search(r'Owner:\s*(.+?)\s*\((\w+)\)', output)
-        if owner_match:
-            long_name = owner_match.group(1).strip()
-            short_name = owner_match.group(2).strip()
+        my_node_num = _get_field('myNodeNum', r'"myNodeNum":\s*(\d+)', required=True)
+        if isinstance(my_node_num, str):
+            my_node_num = int(my_node_num)
+        
+        reboot_count = _get_field('rebootCount', r'"rebootCount":\s*(\d+)', default=0)
+        if isinstance(reboot_count, str):
+            reboot_count = int(reboot_count)
+        
+        firmware_version = _get_field('firmwareVersion', r'"firmwareVersion":\s*"([^"]+)"', default="unknown")
+        hw_model = _get_field('hwModel', r'"hwModel":\s*"([^"]+)"', default="unknown")
+        role = _get_field('role', r'"role":\s*"([^"]+)"', default="unknown")
+        
+        if parsed_json:
+            has_bluetooth = parsed_json.get('hasBluetooth', False)
+            has_wifi = parsed_json.get('hasWifi', False)
         else:
-            # Fallback: try to extract from JSON-like structure
-            long_name = f"Meshtastic {my_node_num:x}"[:20]
-            short_name = f"{my_node_num:x}"[:4]
-            logger.warning(f"Could not parse owner info, using fallback: {long_name}")
+            has_bluetooth = '"hasBluetooth": true' in output
+            has_wifi = '"hasWifi": true' in output
         
-        # Parse firmware version
-        fw_match = re.search(r'"firmwareVersion":\s*"([^"]+)"', output)
-        firmware_version = fw_match.group(1) if fw_match else "unknown"
+        long_name = "unknown"
+        short_name = "unknown"
+        if parsed_json and 'owner' in parsed_json:
+            owner = parsed_json['owner']
+            long_name = owner.get('longName', long_name)
+            short_name = owner.get('shortName', short_name)
+        else:
+            owner_match = re.search(r'Owner:\s*(.+?)\s*\((\w+)\)', output)
+            if owner_match:
+                long_name = owner_match.group(1).strip()
+                short_name = owner_match.group(2).strip()
+            else:
+                long_name = f"Meshtastic {my_node_num:x}"[:20]
+                short_name = f"{my_node_num:x}"[:4]
+                logger.warning(f"Could not parse owner info, using fallback: {long_name}")
         
-        # Parse hwModel
-        hw_match = re.search(r'"hwModel":\s*"([^"]+)"', output)
-        hw_model = hw_match.group(1) if hw_match else "unknown"
-        
-        # Parse role
-        role_match = re.search(r'"role":\s*"([^"]+)"', output)
-        role = role_match.group(1) if role_match else "unknown"
-        
-        # Parse capabilities
-        has_bluetooth = '"hasBluetooth": true' in output
-        has_wifi = '"hasWifi": true' in output
-        
-        # Generate node_id
         node_id = f"!{short_name}"
         
         return cls(
@@ -345,7 +365,6 @@ class DeviceRegistry:
         self._managers: Dict[str, DeviceManager] = {}
         self.logger = get_logger(__name__)
         
-        # Create managers for all devices
         for name, config in devices.items():
             self._managers[name] = DeviceManager(config)
     
@@ -417,7 +436,6 @@ class DeviceRegistry:
         """
         devices = []
         for name, manager in self._managers.items():
-            # Получаем тип подключения как строку
             conn_type = manager.config.connection.type
             if hasattr(conn_type, 'value'):
                 conn_type = conn_type.value
