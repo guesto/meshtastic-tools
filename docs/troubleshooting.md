@@ -2,6 +2,25 @@
 
 ## Common Issues and Solutions
 
+### Collection results are stale or unknown
+
+1. Read the locally recorded collection status:
+   ```
+   meshtastic-tools logger status --device DEVICE_NAME
+   ```
+2. `UNKNOWN` is expected until the first actual collection after upgrading. Timer checks
+   that skip a completed cron time do not initialize or alter collection status.
+3. For `ERROR`, inspect the last error and its timestamp. A successful `info` collection
+   resets consecutive failures while preserving the historical error message.
+4. For `STALE`, check both the timer and service logs:
+   ```
+   meshtastic-tools logger service-status
+   meshtastic-tools logger service-logs DEVICE_NAME --lines 50
+   ```
+5. `UNREADABLE` indicates an invalid or inaccessible `data_dir/DEVICE/.status.json`.
+   Check its ownership and permissions. Preserve an invalid record for diagnosis before
+   moving it out of the way; the next collection can then initialize a new record.
+
 ### Device not connecting
 
 1. Check if device is reachable via ping (for host connections):
@@ -214,6 +233,19 @@ If your device name contains special characters (`!`, `@`, `#`, etc.):
        ...
    ```
 
+### Unexpected schedules or timezone
+
+1. Inspect the effective configuration and the source comments:
+   ```
+   meshtastic-tools config-show --effective --section tools
+   ```
+2. A device-level `schedule` overrides `tools.logger.defaults.schedule`. An explicit
+   `schedule: null` stops inheritance; enabled devices require a valid schedule.
+3. Check `tools.logger.timezone`. An IANA name makes the schedule independent of the
+   server's timezone; `local` uses the server setting.
+4. Check `tools.logger.health.grace_seconds`. `null` means automatic calculation;
+   an integer overrides the freshness grace period.
+
 ### YAML errors when loading config
 
 1. Check for proper indentation (use spaces, not tabs)
@@ -228,7 +260,11 @@ If your device name contains special characters (`!`, `@`, `#`, etc.):
    meshtastic-tools config-validate
    ```
 
-4. Common YAML issues:
+4. Duplicate keys and unknown fields are errors. Fix the reported spelling or line;
+   duplicate values no longer silently replace one another. Remove the obsolete
+   `baudrate` field from serial connection settings.
+
+5. Common YAML issues:
    - Missing spaces after colons
    - Incorrect indentation
    - Using tabs instead of spaces

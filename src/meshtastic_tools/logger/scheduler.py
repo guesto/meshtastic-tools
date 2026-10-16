@@ -5,7 +5,7 @@ import json
 import os
 import tempfile
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 from croniter import croniter
@@ -36,10 +36,11 @@ class DeviceSchedule:
     @staticmethod
     def latest_slot(schedule: str, now: datetime) -> float:
         # get_prev is exclusive: include a slot that falls exactly at now.
-        slot = croniter(schedule, now + timedelta(microseconds=1)).get_prev(datetime)
+        base = datetime.fromtimestamp(now.timestamp() + 0.000001, now.tzinfo)
+        slot = croniter(schedule, base).get_prev(datetime)
         return slot.timestamp()
 
-    def is_due(self, schedule: str, now: datetime) -> bool:
+    def is_due(self, schedule: str, now: datetime, timezone_name: str = "local") -> bool:
         slot = self.latest_slot(schedule, now)
         try:
             state = json.loads(self.path.read_text(encoding="utf-8"))
@@ -53,19 +54,19 @@ class DeviceSchedule:
         # A fresh installation starts with the current minute, without collecting
         # a slot from hours ago. Afterwards, collect the latest missed slot once.
         if now.timestamp() - slot < 60:
-            previous = croniter(schedule, datetime.fromtimestamp(slot)).get_prev(datetime)
-            self.mark_completed(schedule, previous.timestamp())
+            previous = croniter(schedule, datetime.fromtimestamp(slot, now.tzinfo)).get_prev(datetime)
+            self.mark_completed(schedule, previous.timestamp(), timezone_name)
             return True
-        self.mark_completed(schedule, slot)
+        self.mark_completed(schedule, slot, timezone_name)
         return False
 
-    def mark_completed(self, schedule: str, slot: float) -> None:
+    def mark_completed(self, schedule: str, slot: float, timezone_name: str = "local") -> None:
         temp_path = None
         try:
             with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.directory,
                                              prefix=".schedule-", suffix=".tmp", delete=False) as temp:
                 temp_path = Path(temp.name)
-                json.dump({"schedule": schedule, "last_slot": slot}, temp)
+                json.dump({"schedule": schedule, "timezone": timezone_name, "last_slot": slot}, temp)
                 temp.flush()
                 os.fsync(temp.fileno())
             os.replace(temp_path, self.path)

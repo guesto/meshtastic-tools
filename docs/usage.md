@@ -62,6 +62,8 @@ Show current configuration:
 meshtastic-tools config-show
 meshtastic-tools config-show --section devices
 meshtastic-tools config-show --section tools
+meshtastic-tools config-show --effective
+meshtastic-tools config-show --effective --section tools
 ```
 
 Validate configuration:
@@ -69,6 +71,11 @@ Validate configuration:
 ```
 meshtastic-tools config-validate
 ```
+
+The effective view includes defaults, inherited schedules, resolved paths and source
+comments. It leaves the file unchanged. Common schedules belong in
+`tools.logger.defaults.schedule`; each device must still be enabled explicitly.
+`tools.logger.timezone` selects the timezone for scheduling, schedule previews and status.
 
 Show config file search paths:
 
@@ -288,6 +295,55 @@ sudo meshtastic-tools logger service-cleanup
 sudo meshtastic-tools logger service-cleanup --yes
 ```
 
+### Collection health
+
+Inspect all configured devices, or one device, using locally recorded results:
+
+```
+meshtastic-tools logger status
+meshtastic-tools logger status --device DEVICE_NAME
+meshtastic-tools logger status --json
+meshtastic-tools logger status --device DEVICE_NAME --json --check
+```
+
+The report shows the last successful `info` collection, last attempt, request duration,
+consecutive failures, the most recent error and its time, and the next configured cron
+time. It reads local files without connecting to devices or querying systemd.
+
+States:
+
+- `OK`: the last attempt succeeded and the data is current.
+- `ERROR`: the last attempt failed, including snapshot saving or cleanup errors.
+- `STALE`: the data is overdue for its schedule.
+- `UNKNOWN`: collection results have not been recorded yet.
+- `DISABLED`: this device or the entire logger is disabled in the configuration.
+- `UNREADABLE`: the stored status cannot be read or validated.
+
+Freshness follows the device's cron schedule in `tools.logger.timezone`. The default
+grace period is 60 seconds for the timer plus the connection timeout. Set
+`tools.logger.health.grace_seconds` to an integer to override it, or `null` for automatic
+calculation. Data becomes stale
+when that period has passed and no successful `info` collection covers the due time.
+Daily schedules therefore remain current between their daily runs.
+
+Without `--check`, health states are informational. With `--check`, the exit code is
+1 if any enabled device is `ERROR`, `STALE`, or `UNKNOWN`, or if no devices are configured.
+Unreadable status is always an error. Disabled devices are excluded from health checks.
+`--json` keeps its JSON output on unsuccessful checks as well.
+
+Both manual and scheduled collection update the private file
+`DATA_DIR/DEVICE/.status.json` after an attempt finishes. Each collector has a separate
+record; manual telemetry, position or node collection cannot mask a failing scheduled
+`info` collection. A successful `info` collection resets the failure count and preserves
+the most recent error for diagnosis. Request duration includes collection and saving,
+with subsequent cleanup excluded. If cleanup fails after saving a snapshot, its successful
+collection time is retained and the attempt is reported as `ERROR`.
+
+Records survive restarts and snapshot cleanup. Their permissions are `0600`, error
+messages are redacted, and the first collection after upgrading initializes the record.
+The next scheduled time comes from configuration; timer enablement is shown separately
+by `logger service-status`.
+
 ## Typical Workflow
 
 ### First time installation
@@ -311,7 +367,9 @@ sudo meshtastic-tools logger service-status
 
 ### Scheduling and errors
 
-Only valid five-field cron expressions are accepted. Enabled logger devices require a schedule.
+Only valid five-field cron expressions are accepted. Enabled logger devices require a
+schedule, either their own or inherited from `tools.logger.defaults.schedule`. Cron
+interpretation follows `tools.logger.timezone` (`local` uses the server's timezone).
 The logger collects at or after a cron time, never early. A checkpoint in
 `DATA_DIR/DEVICE/.schedule.json` prevents repeated collection for the same cron time.
 After downtime the latest missed time is collected once; a fresh installation starts
@@ -339,6 +397,7 @@ Manual collection also runs cleanup after a successful save.
 
 ```
 source /opt/meshtastic-tools/venv/bin/activate
+meshtastic-tools logger status
 meshtastic-tools devices-check --all
 meshtastic-tools logger storage stats
 meshtastic-tools logger service-logs DEVICE_NAME --lines 20

@@ -4,8 +4,10 @@ import os
 import re
 from dataclasses import dataclass, field
 from enum import Enum
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 from dotenv import load_dotenv
@@ -19,6 +21,28 @@ from meshtastic_tools.core.exceptions import ConfigError, ValidationError
 load_dotenv()
 
 
+class UniqueKeyLoader(yaml.SafeLoader):
+    """Reject duplicate explicit keys while preserving YAML merge overrides."""
+
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            key = "<<" if key_node.tag == "tag:yaml.org,2002:merge" else self.construct_object(key_node, deep=deep)
+            try:
+                if key in seen:
+                    raise yaml.constructor.ConstructorError(
+                        "while constructing a mapping", node.start_mark,
+                        f"duplicate key {key!r}", key_node.start_mark,
+                    )
+                seen.add(key)
+            except TypeError as e:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping", node.start_mark,
+                    "mapping keys must be scalar values", key_node.start_mark,
+                ) from e
+        return super().construct_mapping(node, deep=deep)
+
+
 class ConnectionType(str, Enum):
     """Supported connection types as per Meshtastic documentation."""
     HOST = "host"
@@ -28,22 +52,23 @@ class ConnectionType(str, Enum):
 
 class PydanticConnectionConfig(BaseModel):
     """Pydantic model for connection configuration validation."""
-    model_config = ConfigDict(use_enum_values=True)
+    model_config = ConfigDict(use_enum_values=True, extra="forbid")
     
     type: ConnectionType
     address: str
     timeout: int = Field(default=30, ge=1, le=300)
-    baudrate: Optional[int] = Field(default=None, ge=1200, le=921600)
 
 
 class PydanticDeviceConfig(BaseModel):
     """Pydantic model for device configuration validation."""
+    model_config = ConfigDict(extra="forbid")
     connection: PydanticConnectionConfig
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class PydanticStorageConfig(BaseModel):
     """Pydantic model for storage configuration validation."""
+    model_config = ConfigDict(extra="forbid")
     data_dir: Path
     retention_days: Optional[int] = Field(default=None, ge=1)
     max_files: Optional[int] = Field(default=None, ge=1)
@@ -75,11 +100,21 @@ class PydanticLoggerDeviceConfig(BaseModel):
             raise ValueError("schedule must be a valid five-field cron expression")
         return value
 
-    @model_validator(mode="after")
-    def require_schedule(self):
-        if self.enabled and not self.schedule:
-            raise ValueError("An enabled logger device requires a schedule")
-        return self
+
+class PydanticLoggerDefaults(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    schedule: Optional[str] = None
+
+    @field_validator("schedule")
+    @classmethod
+    def validate_schedule(cls, value: Optional[str]) -> Optional[str]:
+        return PydanticLoggerDeviceConfig.validate_schedule(value)
+
+
+class PydanticLoggerHealth(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # null means automatic: timer interval (60 seconds) + device timeout.
+    grace_seconds: Optional[int] = Field(default=None, ge=0, le=86400)
 
 
 class PydanticLoggerToolConfig(BaseModel):
@@ -87,8 +122,41 @@ class PydanticLoggerToolConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     
     enabled: bool = True
+    timezone: str = "local"
+    defaults: PydanticLoggerDefaults = Field(default_factory=PydanticLoggerDefaults)
+    health: PydanticLoggerHealth = Field(default_factory=PydanticLoggerHealth)
     storage: PydanticStorageConfig
     devices: Dict[str, PydanticLoggerDeviceConfig] = Field(default_factory=dict)
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str) -> str:
+        if value != "local":
+            try:
+                ZoneInfo(value)
+            except (ZoneInfoNotFoundError, ValueError) as e:
+                raise ValueError(f"Unknown IANA timezone: {value}") from e
+        return value
+
+    @model_validator(mode="after")
+    def resolve_schedules(self):
+        for name, device in self.devices.items():
+            if "schedule" not in device.model_fields_set:
+                device.schedule = self.defaults.schedule
+            if device.enabled and not device.schedule:
+                raise ValueError(f"Enabled logger device '{name}' requires a schedule or defaults.schedule")
+        return self
+
+
+class PydanticToolsConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    logger: Optional[PydanticLoggerToolConfig] = None
+
+
+class PydanticAppConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    devices: Dict[str, PydanticDeviceConfig] = Field(default_factory=dict)
+    tools: PydanticToolsConfig = Field(default_factory=PydanticToolsConfig)
 
 
 @dataclass
@@ -97,7 +165,6 @@ class ConnectionConfig:
     type: ConnectionType
     address: str
     timeout: int = 30
-    baudrate: Optional[int] = None
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ConnectionConfig":
@@ -112,9 +179,6 @@ class ConnectionConfig:
                 f"Connection address is empty for type '{validated.type}'"
             )
 
-        if validated.type == ConnectionType.PORT and validated.baudrate not in (None, 115200):
-            raise ValidationError("Meshtastic CLI uses a fixed serial baudrate of 115200")
-        
         if validated.type == ConnectionType.HOST:
             if not validated.address:
                 raise ValidationError("Host connection requires a valid IP address or hostname")
@@ -129,7 +193,6 @@ class ConnectionConfig:
             type=validated.type,
             address=validated.address,
             timeout=validated.timeout,
-            baudrate=validated.baudrate,
         )
     
     def get_cli_args(self) -> List[str]:
@@ -137,8 +200,6 @@ class ConnectionConfig:
         if self.type == ConnectionType.HOST:
             return ["--host", self.address]
         elif self.type == ConnectionType.PORT:
-            if self.baudrate not in (None, 115200):
-                raise ValueError("Meshtastic CLI uses a fixed serial baudrate of 115200")
             return ["--port", self.address]
         elif self.type == ConnectionType.BLE:
             return ["--ble", self.address]
@@ -205,6 +266,9 @@ class LoggerToolConfig:
     enabled: bool
     storage: StorageConfig
     devices: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    timezone: str = "local"
+    default_schedule: Optional[str] = None
+    health_grace_seconds: Optional[int] = None
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "LoggerToolConfig":
@@ -215,6 +279,9 @@ class LoggerToolConfig:
                 enabled=validated.enabled,
                 storage=StorageConfig.from_dict(validated.storage.model_dump()),
                 devices={name: config.model_dump() for name, config in validated.devices.items()},
+                timezone=validated.timezone,
+                default_schedule=validated.defaults.schedule,
+                health_grace_seconds=validated.health.grace_seconds,
             )
         except PydanticValidationError as e:
             raise ValidationError(f"Invalid logger tool configuration: {e}")
@@ -229,6 +296,13 @@ class LoggerToolConfig:
         device_config = self.devices.get(device_name, {})
         return device_config.get("enabled", False)
 
+    def schedule_time(self, now: datetime) -> datetime:
+        """Convert a reference instant to the configured scheduling timezone."""
+        return now if self.timezone == "local" else now.astimezone(ZoneInfo(self.timezone))
+
+    def get_health_grace(self, timeout: int) -> int:
+        return 60 + timeout if self.health_grace_seconds is None else self.health_grace_seconds
+
 
 class ConfigManager:
     """Manage configuration from multiple sources with priority."""
@@ -239,7 +313,7 @@ class ConfigManager:
         Path.cwd() / "config" / "meshtastic-tools.yaml",
     ]
     
-    def __init__(self, config_path: Optional[Path] = None, strict: bool = False):
+    def __init__(self, config_path: Optional[Path] = None, strict: bool = True):
         """
         Initialize configuration manager.
         
@@ -248,12 +322,14 @@ class ConfigManager:
                         searches in default locations.
             strict: If True, raise on first invalid device instead of skipping.
         """
-        self.config_path = config_path
+        self.config_path = Path(config_path) if config_path is not None else None
         self.strict = strict
         self._config: Dict[str, Any] = {}
         self._devices: Dict[str, DeviceConfig] = {}
         self._logger_config: Optional[LoggerToolConfig] = None
         self.loaded_path: Optional[Path] = None
+        self.config_source = "built-in defaults"
+        self._validated: Optional[PydanticAppConfig] = None
         
     def load(self) -> None:
         """Load configuration from files."""
@@ -268,15 +344,18 @@ class ConfigManager:
         self._devices = {}
         self._logger_config = None
         self.loaded_path = None
+        self._validated = None
+        self.config_source = "built-in defaults"
         
         config_loaded = False
         for path in paths_to_try:
             if path and path.exists():
                 try:
                     with open(path, "r") as f:
-                        loaded = yaml.safe_load(f)
+                        loaded = yaml.load(f, Loader=UniqueKeyLoader)
                         self._config = {} if loaded is None else loaded
                     self.loaded_path = path.resolve()
+                    self.config_source = "explicit path" if self.config_path else ("environment" if env_config else "search paths")
                     config_loaded = True
                     break
                 except Exception as e:
@@ -287,6 +366,11 @@ class ConfigManager:
 
         if not isinstance(self._config, dict):
             raise ConfigError("Configuration must be a YAML mapping")
+
+        try:
+            self._validated = PydanticAppConfig.model_validate(self._config)
+        except PydanticValidationError as e:
+            raise ConfigError(f"Invalid configuration: {e}") from e
         
         self._parse_devices()
         self._parse_logger_config()
@@ -425,6 +509,39 @@ class ConfigManager:
     def raw_config(self) -> Dict[str, Any]:
         """Get raw configuration dictionary."""
         return self._config
+
+    @property
+    def effective_config(self) -> Dict[str, Any]:
+        """Return normalized settings with inherited values and resolved paths."""
+        if self._validated is None:
+            raise ConfigError("Load configuration before requesting effective settings")
+        result = self._validated.model_dump(mode="json")
+        if self._logger_config:
+            result["tools"]["logger"]["storage"]["data_dir"] = str(self._logger_config.storage.data_dir)
+        elif result["tools"]["logger"] is None:
+            result["tools"] = {}
+        return result
+
+    def effective_sources(self) -> Dict[str, str]:
+        """Explain inheritance and automatic values without modifying YAML settings."""
+        sources = {}
+        if self._logger_config:
+            raw_logger = self._config.get("tools", {}).get("logger", {})
+            sources["tools.logger.timezone"] = "configured" if "timezone" in raw_logger else "default: local"
+            raw_dir = Path(raw_logger["storage"]["data_dir"])
+            sources["tools.logger.storage.data_dir"] = (
+                "configured absolute path" if raw_dir.is_absolute() else "resolved relative to the configuration file"
+            )
+            for name in self._logger_config.devices:
+                raw_device = raw_logger.get("devices", {}).get(name, {})
+                sources[f"tools.logger.devices.{name}.schedule"] = (
+                    "device setting" if "schedule" in raw_device else "tools.logger.defaults.schedule"
+                )
+                timeout = self._devices[name].connection.timeout
+                grace = self._logger_config.get_health_grace(timeout)
+                origin = "automatic: 60 + connection.timeout" if self._logger_config.health_grace_seconds is None else "tools.logger.health.grace_seconds"
+                sources[f"health grace for {name}"] = f"{grace} seconds ({origin})"
+        return sources
     
     def validate(self) -> List[str]:
         """Validate entire configuration, return list of warnings/issues."""

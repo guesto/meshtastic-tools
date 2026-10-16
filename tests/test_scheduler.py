@@ -64,3 +64,20 @@ def test_corrupt_state_fails_without_contacting_device(tmp_path):
     with DeviceSchedule(tmp_path).locked():
         with pytest.raises(CollectionError, match="Invalid scheduler state"):
             DeviceSchedule(tmp_path).is_due("* * * * *", datetime.now())
+
+
+@pytest.mark.parametrize("fold", [0, 1])
+def test_latest_slot_preserves_repeated_dst_hour(fold):
+    from zoneinfo import ZoneInfo
+    now = datetime(2026, 10, 25, 2, 30, tzinfo=ZoneInfo("Europe/Berlin"), fold=fold)
+    assert DeviceSchedule.latest_slot("* * * * *", now) == now.timestamp()
+
+
+def test_naming_same_timezone_does_not_repeat_completed_slot(tmp_path):
+    from zoneinfo import ZoneInfo
+    schedule = "0 12 * * *"
+    now = datetime(2026, 10, 16, 12, 0, tzinfo=ZoneInfo("Asia/Yekaterinburg"))
+    state = DeviceSchedule(tmp_path)
+    with state.locked():
+        state.mark_completed(schedule, state.latest_slot(schedule, now), "local")
+        assert not state.is_due(schedule, now, "Asia/Yekaterinburg")

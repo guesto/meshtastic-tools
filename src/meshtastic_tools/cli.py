@@ -61,14 +61,16 @@ def version():
 
 @app.command()
 def config_show(
+    ctx: typer.Context,
     section: Optional[str] = typer.Option(
         None, "--section", "-s", help="Show specific section (devices, tools)"
     ),
+    effective: bool = typer.Option(False, "--effective", help="Show resolved settings, defaults, and their sources"),
 ):
     """Show current configuration."""
     import yaml
     
-    manager = ConfigManager(strict=True)
+    manager = ConfigManager(config_path=ctx.find_root().params.get("config"), strict=True)
     
     try:
         manager.load()
@@ -76,7 +78,7 @@ def config_show(
         typer.echo(f"Error loading config: {e}", err=True)
         raise typer.Exit(code=1)
     
-    config_data = manager.raw_config
+    config_data = manager.effective_config if effective else manager.raw_config
     
     if section:
         if section in config_data:
@@ -85,7 +87,11 @@ def config_show(
             typer.echo(f"Section '{section}' not found", err=True)
             raise typer.Exit(code=1)
     
-    typer.echo(yaml.dump(config_data, default_flow_style=False, indent=2))
+    if effective:
+        typer.echo(f"# Source: {manager.loaded_path or 'built-in defaults'} ({manager.config_source})")
+        for setting, source in manager.effective_sources().items():
+            typer.echo(f"# {setting}: {source}")
+    typer.echo(yaml.safe_dump(config_data, default_flow_style=False, indent=2, sort_keys=False, allow_unicode=True))
 
 
 @app.command()
@@ -235,8 +241,8 @@ def devices_show(
     
     typer.echo(f"  Connection: {conn_type} {device_config.connection.address}")
     
-    if conn_type == "port" and device_config.connection.baudrate:
-        typer.echo(f"  Baudrate: {device_config.connection.baudrate}")
+    if conn_type == "port":
+        typer.echo("  Baudrate: 115200 (fixed by Meshtastic CLI)")
     
     typer.echo(f"  Timeout: {device_config.connection.timeout}s")
     

@@ -11,6 +11,7 @@ from meshtastic_tools.core.config import (
     ConnectionConfig,
     ConnectionType,
     DeviceConfig,
+    LoggerToolConfig,
 )
 from meshtastic_tools.core.exceptions import ConfigError, ValidationError
 
@@ -32,7 +33,6 @@ class TestConnectionConfig:
         config = ConnectionConfig(
             type=ConnectionType.PORT,
             address="/dev/ttyUSB0",
-            baudrate=115200,
         )
         
         args = config.get_cli_args()
@@ -170,8 +170,8 @@ def test_unsafe_device_names_are_rejected(name):
         DeviceConfig.from_dict(name, {"connection": {"type": "host", "address": "example.invalid"}})
 
 
-def test_nonstandard_serial_baudrate_is_rejected():
-    with pytest.raises(ValidationError, match="115200"):
+def test_removed_serial_baudrate_setting_is_rejected():
+    with pytest.raises(ValidationError, match="baudrate"):
         ConnectionConfig.from_dict({"type": "port", "address": "/dev/ttyUSB0", "baudrate": 9600})
 
 
@@ -189,3 +189,127 @@ def test_relative_storage_is_anchored_to_config_file(tmp_path, monkeypatch):
     manager = ConfigManager(config_path=path)
     manager.load()
     assert manager.logger_config.storage.data_dir == (tmp_path / "../snapshots").resolve()
+
+
+def test_logger_defaults_inherit_without_implicitly_enabling_devices():
+    config = LoggerToolConfig.from_dict({
+        "defaults": {"schedule": "*/5 * * * *"}, "storage": {"data_dir": "data"},
+        "devices": {"alpha": {"enabled": True}, "beta": {},
+                    "gamma": {"enabled": True, "schedule": "0 * * * *"}},
+    })
+    assert config.get_device_schedule("alpha") == "*/5 * * * *"
+    assert config.is_device_enabled("alpha")
+    assert not config.is_device_enabled("beta")
+    assert not config.is_device_enabled("not-listed")
+    assert config.get_device_schedule("gamma") == "0 * * * *"
+
+
+def test_explicit_null_schedule_does_not_inherit():
+    with pytest.raises(ValidationError, match="requires a schedule"):
+        LoggerToolConfig.from_dict({"storage": {"data_dir": "data"}, "defaults": {"schedule": "* * * * *"},
+                                    "devices": {"alpha": {"enabled": True, "schedule": None}}})
+
+
+@pytest.mark.parametrize("schedule", ["not-a-cron", "* * * * * *", "90 * * * *"])
+def test_invalid_default_schedule_is_rejected(schedule):
+    with pytest.raises(ValidationError, match="schedule"):
+        LoggerToolConfig.from_dict({"storage": {"data_dir": "data"}, "defaults": {"schedule": schedule}})
+
+
+@pytest.mark.parametrize("zone", ["Invalid/Timezone", "", "../etc/passwd"])
+def test_invalid_timezone_is_rejected(zone):
+    with pytest.raises(ValidationError, match="timezone"):
+        LoggerToolConfig.from_dict({"storage": {"data_dir": "data"}, "timezone": zone})
+
+
+def test_timezone_conversion_and_automatic_health_grace():
+    from datetime import datetime, timezone
+    config = LoggerToolConfig.from_dict({"storage": {"data_dir": "data"}, "timezone": "Asia/Yekaterinburg"})
+    converted = config.schedule_time(datetime(2026, 10, 16, 12, 0, tzinfo=timezone.utc))
+    assert converted.hour == 17
+    assert converted.utcoffset().total_seconds() == 18000
+    assert config.get_health_grace(300) == 360
+
+
+@pytest.mark.parametrize("grace", [0, 90, 86400])
+def test_explicit_health_grace(grace):
+    config = LoggerToolConfig.from_dict({"storage": {"data_dir": "data"}, "health": {"grace_seconds": grace}})
+    assert config.get_health_grace(300) == grace
+
+
+@pytest.mark.parametrize("grace", [-1, 86401, "bad"])
+def test_invalid_health_grace_is_rejected(grace):
+    with pytest.raises(ValidationError, match="grace_seconds"):
+        LoggerToolConfig.from_dict({"storage": {"data_dir": "data"}, "health": {"grace_seconds": grace}})
+
+
+@pytest.mark.parametrize("document", [
+    "devices: {}\ndevices: {}",
+    "devices: {alpha: {connection: {type: host, address: a, timeout: 30, timeout: 60}}}",
+    "devices: {alpha: {connection: {type: host, address: a}, metadata: {location: a, location: b}}}",
+    "devices: {alpha: &base {connection: {type: host, address: a}}, beta: {<<: *base, <<: *base}}",
+])
+def test_duplicate_yaml_keys_are_rejected_with_line_number(tmp_path, document):
+    path = tmp_path / "config.yaml"
+    path.write_text(document)
+    with pytest.raises(ConfigError, match="duplicate key") as error:
+        ConfigManager(path).load()
+    assert "line" in str(error.value)
+
+
+def test_yaml_merge_override_is_allowed(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text('''devices:
+  alpha: &base
+    connection: {type: host, address: alpha.invalid}
+    metadata: {location: room}
+  beta:
+    <<: *base
+    connection: {type: host, address: beta.invalid}
+''')
+    manager = ConfigManager(path)
+    manager.load()
+    assert manager.get_device("beta").connection.address == "beta.invalid"
+    assert manager.get_device("beta").metadata["location"] == "room"
+
+
+@pytest.mark.parametrize("field_path", [
+    ("typo",), ("devices", "alpha", "typo"),
+    ("devices", "alpha", "connection", "timeuot"), ("tools", "loger"),
+    ("tools", "logger", "typo"), ("tools", "logger", "storage", "max_file"),
+    ("tools", "logger", "defaults", "enabled"), ("tools", "logger", "health", "grace"),
+    ("tools", "logger", "devices", "alpha", "enabeld"),
+])
+def test_unknown_fields_are_rejected_everywhere(tmp_path, field_path):
+    config = {"devices": {"alpha": {"connection": {"type": "host", "address": "example.invalid"}}},
+              "tools": {"logger": {"storage": {"data_dir": "data"}, "defaults": {}, "health": {},
+                                    "devices": {"alpha": {"enabled": False}}}}}
+    target = config
+    for key in field_path[:-1]:
+        target = target[key]
+    target[field_path[-1]] = "unexpected"
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(config))
+    with pytest.raises(ConfigError, match="Extra inputs"):
+        ConfigManager(path).load()
+
+
+def test_effective_config_is_resolved_and_can_be_loaded_again(tmp_path):
+    path = tmp_path / "config.yaml"
+    config = {"devices": {"alpha": {"connection": {"type": "host", "address": "example.invalid"}}},
+              "tools": {"logger": {"defaults": {"schedule": "*/5 * * * *"},
+                                    "storage": {"data_dir": "data"}, "devices": {"alpha": {"enabled": True}}}}}
+    path.write_text(yaml.safe_dump(config))
+    manager = ConfigManager(path)
+    manager.load()
+    effective = manager.effective_config
+    assert effective["devices"]["alpha"]["connection"]["timeout"] == 30
+    assert effective["tools"]["logger"]["devices"]["alpha"]["schedule"] == "*/5 * * * *"
+    assert effective["tools"]["logger"]["storage"]["data_dir"] == str(tmp_path / "data")
+    assert effective["tools"]["logger"]["timezone"] == "local"
+    assert "defaults.schedule" in manager.effective_sources()["tools.logger.devices.alpha.schedule"]
+    assert manager.raw_config == config
+    path.write_text(yaml.safe_dump(effective))
+    reloaded = ConfigManager(path)
+    reloaded.load()
+    assert reloaded.effective_config == effective

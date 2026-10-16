@@ -40,8 +40,14 @@ nano /etc/meshtastic-tools/config.yaml
 # Core: check device connections
 meshtastic-tools devices-check --all
 
+# Inspect applied defaults, inherited schedules, and resolved paths
+meshtastic-tools config-show --effective
+
 # Logger: collect data once
 meshtastic-tools logger collect info --all
+
+# Logger: inspect collection health without contacting devices
+meshtastic-tools logger status
 
 # Logger: install and enable automatic collection
 sudo /opt/meshtastic-tools/venv/bin/meshtastic-tools logger service-install
@@ -75,6 +81,11 @@ Schedule "*/5 * * * *" per device
 Snapshots redact credentials and use private file permissions. Each service collects
 only its selected device; persistent checkpoints and locks prevent overlapping collection.
 Service logs are available through `logger service-logs` (systemd journal).
+`logger status` shows collection times, failures, request duration, and overdue data;
+`logger status --json --check` supports external health checks.
+Shared schedules can be set through `tools.logger.defaults.schedule`; each device is
+enabled explicitly. `tools.logger.timezone` controls cron interpretation, and
+`tools.logger.health.grace_seconds` controls the freshness grace period.
 See the usage guide for applying updated units to an existing installation.
 
 ## Project Structure

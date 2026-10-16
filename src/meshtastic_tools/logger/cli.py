@@ -9,11 +9,12 @@ from croniter import croniter
 
 from meshtastic_tools.core.config import ConfigManager
 from meshtastic_tools.core.device import DeviceManager, DeviceRegistry
-from meshtastic_tools.core.exceptions import CollectionError, ConfigError
+from meshtastic_tools.core.exceptions import CollectionError, ConfigError, StorageError
 from meshtastic_tools.core.logging_config import get_logger
 from meshtastic_tools.logger.collector import MeshtasticCollector
 from meshtastic_tools.logger.storage import GlobalStorageManager
 from meshtastic_tools.logger.scheduler import DeviceSchedule
+from meshtastic_tools.logger.health import DeviceHealth, device_status
 from meshtastic_tools.logger.services import render_service, render_timer
 
 SYSTEMD_DIR = Path("/etc/systemd/system")
@@ -116,8 +117,10 @@ def collect(
             
             schedule_state = DeviceSchedule(device_storage.device_path.parent)
             with schedule_state.locked():
-                filepath = getattr(collector, f"collect_{collector_type}")()
-                device_storage.cleanup()
+                with DeviceHealth(device_storage.device_path.parent).attempt(collector_type, "manual") as attempt:
+                    filepath = getattr(collector, f"collect_{collector_type}")()
+                    attempt.collected(filepath)
+                    device_storage.cleanup()
 
             size = filepath.stat().st_size
             typer.echo(f"  ✓ {device_name}: {filepath.name} ({size} bytes)")
@@ -162,20 +165,98 @@ def run(
             device_storage = storage_manager.get_device_manager(device_name)
             state = DeviceSchedule(device_storage.device_path.parent)
             with state.locked():
-                now = datetime.now()
+                now = logger_config.schedule_time(datetime.now())
                 schedule = logger_config.get_device_schedule(device_name)
-                if not force and not state.is_due(schedule, now):
+                if not force and not state.is_due(schedule, now, logger_config.timezone):
                     continue
                 collector = MeshtasticCollector(registry.get_manager(device_name), device_storage)
-                filepath = collector.collect_info()
-                state.mark_completed(schedule, state.latest_slot(schedule, now))
-                logger.info(f"Collected from {device_name}", file=filepath.name)
-                device_storage.cleanup()
+                with DeviceHealth(device_storage.device_path.parent).attempt("info", "scheduled") as attempt:
+                    filepath = collector.collect_info()
+                    attempt.collected(filepath)
+                    state.mark_completed(schedule, state.latest_slot(schedule, now), logger_config.timezone)
+                    logger.info(f"Collected from {device_name}", file=filepath.name)
+                    device_storage.cleanup()
         except Exception as e:
             failed = True
             logger.error(f"Collection failed for {device_name}", error=str(e))
 
     if failed:
+        raise typer.Exit(code=1)
+
+
+@logger_app.command("status")
+def status(
+    device: Optional[str] = typer.Option(None, "--device", "-d", help="Show one device"),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
+    check: bool = typer.Option(False, "--check", help="Exit with code 1 if an enabled device is unhealthy"),
+):
+    """Show collection health from local records without contacting devices."""
+    import json
+
+    manager = _get_config()
+    logger_config = _get_logger_config(manager)
+    if device and device not in manager.devices:
+        typer.echo(f"Device '{device}' not found", err=True)
+        raise typer.Exit(code=1)
+    names = [device] if device else list(manager.devices)
+    now = logger_config.schedule_time(datetime.now())
+    reports = []
+    unreadable = False
+    for name in names:
+        enabled = logger_config.enabled and logger_config.is_device_enabled(name)
+        try:
+            report = device_status(
+                name, logger_config.storage.data_dir / name, enabled,
+                logger_config.get_device_schedule(name),
+                manager.devices[name].connection.timeout, now,
+                grace_seconds=logger_config.health_grace_seconds, timezone_name=logger_config.timezone,
+            )
+        except StorageError as e:
+            unreadable = True
+            report = {"device": name, "state": "unreadable", "enabled": enabled, "error": str(e)}
+        reports.append(report)
+
+    if json_output:
+        checked_at = now if now.tzinfo else now.astimezone()
+        typer.echo(json.dumps({"checked_at": checked_at.isoformat(), "devices": reports}, ensure_ascii=False, indent=2))
+    else:
+        if not reports:
+            typer.echo("No devices configured")
+
+        def display_time(value):
+            if value is None:
+                return "not recorded"
+            # Python 3.9/3.10 require an explicit UTC offset instead of Z.
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            localized = logger_config.schedule_time(parsed)
+            if localized.tzinfo is None or logger_config.timezone == "local":
+                localized = parsed.astimezone()
+            return localized.isoformat(timespec="seconds")
+
+        for report in reports:
+            typer.echo(f"\n{report['device']}: {report['state'].upper()}")
+            if report.get("error"):
+                typer.echo(f"  {report['error']}")
+                continue
+            typer.echo(f"  Schedule timezone: {report['timezone']}")
+            typer.echo(f"  Last successful collection: {display_time(report['last_success_at'])}")
+            typer.echo(f"  Last attempt: {display_time(report['last_attempt_at'])}")
+            duration = report["last_duration_seconds"]
+            typer.echo(f"  Request duration: {duration:.2f}s" if duration is not None else "  Request duration: not recorded")
+            typer.echo(f"  Consecutive failures: {report['consecutive_failures']}")
+            error = " ".join(report["last_error"].splitlines()) if report["last_error"] else "none"
+            typer.echo(f"  Last error: {error}")
+            if report["last_failure_at"]:
+                typer.echo(f"  Last error time: {display_time(report['last_failure_at'])}")
+            next_time = display_time(report["next_scheduled_at"]) if report["enabled"] else "disabled"
+            typer.echo(f"  Next scheduled collection: {next_time}")
+            if report["stale"]:
+                typer.echo("  WARNING: collection data is overdue")
+            elif report["state"] == "unknown":
+                typer.echo("  WARNING: no collection results recorded yet")
+
+    unhealthy = any(report["enabled"] and report["state"] != "ok" for report in reports)
+    if unreadable or (check and (unhealthy or not reports)):
         raise typer.Exit(code=1)
 
 
@@ -328,7 +409,7 @@ def schedule_show(
             raise typer.Exit(code=1)
         devices = {device: devices[device]}
     
-    typer.echo("\n[SCHEDULE] Collection schedules:\n")
+    typer.echo(f"\n[SCHEDULE] Collection schedules (timezone: {logger_config.timezone}):\n")
     
     for name in devices:
         enabled = logger_config.is_device_enabled(name)
@@ -351,7 +432,7 @@ def schedule_next(
     logger_config = _get_logger_config(manager)
     
     devices = manager.devices
-    now = datetime.now()
+    now = logger_config.schedule_time(datetime.now())
     
     if device:
         if device not in devices:
@@ -359,7 +440,7 @@ def schedule_next(
             raise typer.Exit(code=1)
         devices = {device: devices[device]}
     
-    typer.echo(f"\n[NEXT] Next collection times (now: {now.strftime('%Y-%m-%d %H:%M:%S')}):\n")
+    typer.echo(f"\n[NEXT] Next collection times (timezone: {logger_config.timezone}, now: {now.isoformat(timespec='seconds')}):\n")
     
     for name in devices:
         enabled = logger_config.is_device_enabled(name)
@@ -377,7 +458,7 @@ def schedule_next(
         try:
             cron = croniter(schedule, now)
             next_time = cron.get_next(datetime)
-            typer.echo(f"  • {name}: {next_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            typer.echo(f"  • {name}: {next_time.isoformat(timespec='seconds')}")
         except Exception as e:
             typer.echo(f"  ✗ {name}: invalid schedule '{schedule}' - {e}")
 
