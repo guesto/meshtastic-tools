@@ -203,6 +203,19 @@ def run(
             logger.error(f"Collection failed for {device_name}", error=str(e))
         except Exception as e:
             logger.error(f"Unexpected error for {device_name}", error=str(e))
+    
+    # Automatically clean up old files after collection
+    try:
+        files_deleted, bytes_freed = storage_manager.cleanup_all(dry_run=False)
+        if files_deleted > 0:
+            mb_freed = bytes_freed / (1024 * 1024)
+            logger.info(
+                "Cleanup completed",
+                files_deleted=files_deleted,
+                mb_freed=f"{mb_freed:.2f}",
+            )
+    except Exception as e:
+        logger.error(f"Cleanup failed: {e}")
 
 @storage_app.command("list")
 def storage_list(
