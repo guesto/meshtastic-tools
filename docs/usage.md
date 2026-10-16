@@ -48,38 +48,10 @@ Test connection with raw output:
 meshtastic-tools devices-test --device DEVICE_NAME
 ```
 
-### Configuration
-
-Show current configuration:
-
-```
-meshtastic-tools config-show
-meshtastic-tools devices-check --all
-```
-
-Check connection to a specific device:
-
-```
-meshtastic-tools devices-check --device DEVICE_NAME
-```
-
-Show detailed device information:
-
-```
-meshtastic-tools devices-show DEVICE_NAME
-meshtastic-tools devices-show DEVICE_NAME --refresh
-```
-
 Show device information with telemetry (battery, voltage, uptime):
 
 ```
-meshtastic-tools devices-show DEVICE_NAME --telemetry
-```
-
-Test connection with raw output:
-
-```
-meshtastic-tools devices-test DEVICE_NAME
+meshtastic-tools devices-show --device DEVICE_NAME --telemetry
 ```
 
 ### Configuration
@@ -144,12 +116,19 @@ Force collection ignoring schedule:
 
 ```
 meshtastic-tools logger run --force
+meshtastic-tools logger run --force --device DEVICE_NAME
 ```
 
 Collect telemetry (battery, voltage, uptime, channel utilization):
 
 ```
 meshtastic-tools logger collect telemetry --device DEVICE_NAME
+```
+
+Collect position from the connected node:
+
+```
+meshtastic-tools logger collect position --device DEVICE_NAME
 ```
 
 Collect list of nodes in mesh:
@@ -220,7 +199,19 @@ meshtastic-tools logger schedule next
 
 ### Service Management (systemd)
 
-All service commands require `sudo`.
+Service installation and management require `sudo`. Each timer collects only its own device.
+Units use the Python environment and configuration selected during installation; the project
+can be installed outside `/opt/meshtastic-tools`. Logs, including errors, go to the systemd journal.
+
+For a custom installation, specify both the executable and the config explicitly:
+
+```
+sudo /path/to/project/venv/bin/meshtastic-tools --config /path/to/config.yaml logger service-install
+```
+
+After upgrading from an older version, regenerate installed units using `service-install`
+and restart enabled timers with `systemctl restart meshtastic-logger@DEVICE_NAME.timer`.
+This applies the device filter and journal logging to existing services.
 
 Install services for all enabled devices:
 
@@ -317,6 +308,32 @@ sudo /opt/meshtastic-tools/venv/bin/meshtastic-tools logger service-install
 sudo meshtastic-tools logger service-enable --all
 sudo meshtastic-tools logger service-status
 ```
+
+### Scheduling and errors
+
+Only valid five-field cron expressions are accepted. Enabled logger devices require a schedule.
+The logger collects at or after a cron time, never early. A checkpoint in
+`DATA_DIR/DEVICE/.schedule.json` prevents repeated collection for the same cron time.
+After downtime the latest missed time is collected once; a fresh installation starts
+with the current minute. Failed attempts can retry on later timer ticks.
+Manual and scheduled collection share a per-device lock. `--force` intentionally
+collects again and advances the scheduled checkpoint after success.
+
+Collection and connection-check commands return a nonzero exit code if any selected
+device fails, while continuing to process the remaining devices.
+
+### Snapshot privacy
+
+Snapshot files use permissions `0600` and storage directories use `0700`. Private keys,
+channel PSKs, passwords, Bluetooth PINs and channel sharing URLs are redacted from new
+snapshots. These files are diagnostic logs, not complete configuration backups.
+Access to existing snapshots is restricted when their storage manager is opened;
+their historical contents are preserved.
+
+Both retention limits apply: for example, `max_files: 50` with `retention_days: 30`
+keeps at most 50 snapshots, each no older than 30 days. All collector types share this
+limit per device. At a five-minute interval, 50 snapshots cover about four hours.
+Manual collection also runs cleanup after a successful save.
 
 ### Daily monitoring
 

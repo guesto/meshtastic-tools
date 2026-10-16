@@ -45,7 +45,7 @@ tools:
     storage:
       data_dir: /opt/meshtastic-tools/data/logger
       retention_days: 30
-      max_files: 1000
+      max_files: 50
       filename_format: "info_{device}_{timestamp}.txt"
     
     devices:
@@ -92,7 +92,8 @@ Each device must have:
 - `connection.type`: `host`, `port`, or `ble`
 - `connection.address`: IP address, serial port, or MAC address
 - `connection.timeout`: seconds (default: 30)
-- `connection.baudrate`: for serial only (optional)
+- `connection.baudrate`: optional compatibility setting; serial uses a fixed 115200 baud.
+  Other rates are rejected; no unsupported `--baudrate` argument is passed to the CLI.
 
 Optional metadata:
 - `description`: Human-readable description
@@ -102,26 +103,33 @@ Optional metadata:
 ## Logger Tool Settings
 
 ### Storage
-- `data_dir`: Directory for collected data
+- `data_dir`: Directory for collected data. Absolute paths are recommended; relative paths
+  are resolved against the selected configuration file's directory.
 - `retention_days`: Delete files older than N days
-- `max_files`: Keep at most N files per device
+- `max_files`: Keep at most N files per device across all collectors (example: 50).
+  Both retention limits apply, so this limit may shorten the history below `retention_days`.
 - `filename_format`: Pattern with `{device}` and `{timestamp}`
 
 ### Device Schedule
 - `enabled`: `true` or `false`
-- `schedule`: Cron expression
+- `schedule`: Valid five-field cron expression, required when the device is enabled.
+  Invalid schedules fail validation and never trigger collection.
 
 ### Available Collectors
 - `info`: Full device information (nodes, channels, config)
 - `telemetry`: Battery, voltage, uptime, channel utilization
 - `nodes`: List of all nodes in mesh range
+- `position`: Position requested from the connected node
 
 ## Cron Schedule Format
 
 The systemd timer triggers collection check every minute. 
 The cron expression defines when collection actually happens.
 
-Note: Collection cannot occur more than once per minute.
+Each cron time is collected at most once, with a persistent checkpoint and a per-device
+lock. Collection never starts before its scheduled time. Failed attempts are retried
+on subsequent timer ticks; after downtime only the latest missed time is collected.
+`--force` permits an explicit extra collection. State uses the system's local timezone.
 
 Examples:
 - `*/5 * * * *` — Every 5 minutes (recommended minimum)
@@ -139,3 +147,16 @@ meshtastic-tools config-show --section devices
 meshtastic-tools config-show --section tools
 meshtastic-tools config-path
 ```
+
+## Privacy and validation
+
+New snapshots redact credentials and channel sharing URLs. Files use mode `0600`;
+storage directories use `0700`. Existing snapshots have their permissions restricted
+without changing historical contents. Keep full device configuration backups separately.
+
+Explicit `--config` takes priority over `MESHTASTIC_TOOLS_CONFIG`, then the standard
+search paths apply. A missing explicitly selected file is an error. CLI commands load
+configuration strictly, including device names and logger references.
+
+Device names may contain ASCII letters, numbers, `_`, `-`, `.`, `!`, `@`, and `#`,
+but cannot be `.` or `..`. Filename formats must produce a visible filename, not a path.

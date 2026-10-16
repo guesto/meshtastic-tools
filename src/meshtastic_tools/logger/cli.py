@@ -13,6 +13,11 @@ from meshtastic_tools.core.exceptions import CollectionError, ConfigError
 from meshtastic_tools.core.logging_config import get_logger
 from meshtastic_tools.logger.collector import MeshtasticCollector
 from meshtastic_tools.logger.storage import GlobalStorageManager
+from meshtastic_tools.logger.scheduler import DeviceSchedule
+from meshtastic_tools.logger.services import render_service, render_timer
+
+SYSTEMD_DIR = Path("/etc/systemd/system")
+CLI_SYMLINK = Path("/usr/local/bin/meshtastic-tools")
 
 logger_app = typer.Typer(
     name="logger",
@@ -29,9 +34,18 @@ schedule_app = typer.Typer(help="Schedule management commands")
 logger_app.add_typer(schedule_app, name="schedule")
 
 
+def _systemctl(args):
+    import subprocess
+    result = subprocess.run(["systemctl", *args], capture_output=True, text=True)
+    if result.returncode:
+        typer.echo(f"systemctl {' '.join(args)} failed: {result.stderr.strip()}", err=True)
+        raise typer.Exit(code=1)
+    return result
+
+
 def _get_config():
     """Load configuration."""
-    manager = ConfigManager()
+    manager = ConfigManager(strict=True)
     try:
         manager.load()
     except Exception as e:
@@ -60,6 +74,13 @@ def collect(
         typer.echo("Please specify --device or --all", err=True)
         raise typer.Exit(code=1)
     
+    if collector_type not in ("info", "telemetry", "nodes", "position"):
+        typer.echo(f"Unknown collector type: {collector_type}", err=True)
+        raise typer.Exit(code=2)
+    if device and all_devices:
+        typer.echo("Choose either --device or --all", err=True)
+        raise typer.Exit(code=2)
+
     logger = get_logger(__name__)
     manager = _get_config()
     logger_config = _get_logger_config(manager)
@@ -93,18 +114,11 @@ def collect(
             device_storage = storage_manager.get_device_manager(device_name)
             collector = MeshtasticCollector(device_manager, device_storage)
             
-            if collector_type == "info":
-                filepath = collector.collect_info()
-            elif collector_type == "telemetry":
-                filepath = collector.collect_telemetry()
-            elif collector_type == "nodes":
-                filepath = collector.collect_nodes()
-            elif collector_type == "position":
-                filepath = collector.collect_position()
-            else:
-                typer.echo(f"Unknown collector type: {collector_type}", err=True)
-                raise typer.Exit(code=1)
-            
+            schedule_state = DeviceSchedule(device_storage.device_path.parent)
+            with schedule_state.locked():
+                filepath = getattr(collector, f"collect_{collector_type}")()
+                device_storage.cleanup()
+
             size = filepath.stat().st_size
             typer.echo(f"  ✓ {device_name}: {filepath.name} ({size} bytes)")
             success_count += 1
@@ -117,105 +131,53 @@ def collect(
             logger.error(f"Unexpected error for {device_name}", error=str(e))
     
     typer.echo(f"\n  Collected from {success_count}/{len(devices_to_collect)} devices")
+    if success_count != len(devices_to_collect):
+        raise typer.Exit(code=1)
 
 @logger_app.command()
 def run(
     force: bool = typer.Option(False, "--force", "-f", help="Ignore schedule and collect immediately"),
+    device: Optional[str] = typer.Option(None, "--device", "-d", help="Run only this device's schedule"),
 ):
-    """Run scheduled collection (for cron/systemd)."""
+    """Run scheduled collection (for cron/systemd). Fail on any collection error."""
     logger = get_logger(__name__)
     manager = _get_config()
     logger_config = _get_logger_config(manager)
-    
     if not logger_config.enabled:
         logger.info("Logger tool is disabled, exiting")
         return
-    
+
     registry = DeviceRegistry(manager.devices)
     storage_manager = GlobalStorageManager(logger_config.storage)
-    
     enabled_devices = registry.get_enabled_devices(logger_config)
-    
-    if not enabled_devices:
-        logger.info("No enabled devices found")
-        return
-    
-    now = datetime.now()
-    tolerance = getattr(logger_config, 'schedule_tolerance', 55)
-    devices_to_collect = []
-    
+    if device:
+        if device not in enabled_devices:
+            typer.echo(f"Device '{device}' is unknown or disabled in logger configuration", err=True)
+            raise typer.Exit(code=1)
+        enabled_devices = [device]
+
+    failed = False
     for device_name in enabled_devices:
-        schedule = logger_config.get_device_schedule(device_name)
-        
-        if force or not schedule:
-            devices_to_collect.append(device_name)
-            continue
-        
         try:
-            cron = croniter(schedule, now)
-            prev_time = cron.get_prev(datetime)
-            next_time = cron.get_next(datetime)
-            
-            distance_to_prev = abs((now - prev_time).total_seconds())
-            distance_to_next = abs((next_time - now).total_seconds())
-            closest_distance = min(distance_to_prev, distance_to_next)
-            
-            logger.debug(
-                f"Schedule check for {device_name}",
-                schedule=schedule,
-                now=now.strftime("%H:%M:%S"),
-                prev=prev_time.strftime("%H:%M:%S"),
-                next=next_time.strftime("%H:%M:%S"),
-                dist_prev=f"{distance_to_prev:.0f}s",
-                dist_next=f"{distance_to_next:.0f}s",
-                closest=f"{closest_distance:.0f}s",
-            )
-            
-            if closest_distance <= tolerance:
-                devices_to_collect.append(device_name)
-                logger.info(f"Device {device_name} is due for collection")
-            else:
-                logger.debug(
-                    f"Device {device_name} not due yet",
-                    next=next_time.strftime("%H:%M:%S"),
-                )
-                
-        except Exception as e:
-            logger.warning(f"Invalid schedule for {device_name}: {schedule} - {e}")
-            devices_to_collect.append(device_name)
-    
-    if not devices_to_collect:
-        logger.debug("No devices due for collection, skipping connection checks")
-        return
-    
-    logger.info(f"Running scheduled collection for {len(devices_to_collect)} device(s)")
-    
-    for device_name in devices_to_collect:
-        try:
-            device_manager = registry.get_manager(device_name)
             device_storage = storage_manager.get_device_manager(device_name)
-            collector = MeshtasticCollector(device_manager, device_storage)
-            
-            filepath = collector.collect_info()
-            logger.info(f"Collected from {device_name}", file=filepath.name)
-            
-        except CollectionError as e:
-            logger.error(f"Collection failed for {device_name}", error=str(e))
+            state = DeviceSchedule(device_storage.device_path.parent)
+            with state.locked():
+                now = datetime.now()
+                schedule = logger_config.get_device_schedule(device_name)
+                if not force and not state.is_due(schedule, now):
+                    continue
+                collector = MeshtasticCollector(registry.get_manager(device_name), device_storage)
+                filepath = collector.collect_info()
+                state.mark_completed(schedule, state.latest_slot(schedule, now))
+                logger.info(f"Collected from {device_name}", file=filepath.name)
+                device_storage.cleanup()
         except Exception as e:
-            logger.error(f"Unexpected error for {device_name}", error=str(e))
-    
-    # Automatically clean up old files after collection
-    try:
-        files_deleted, bytes_freed = storage_manager.cleanup_all(dry_run=False)
-        if files_deleted > 0:
-            mb_freed = bytes_freed / (1024 * 1024)
-            logger.info(
-                "Cleanup completed",
-                files_deleted=files_deleted,
-                mb_freed=f"{mb_freed:.2f}",
-            )
-    except Exception as e:
-        logger.error(f"Cleanup failed: {e}")
+            failed = True
+            logger.error(f"Collection failed for {device_name}", error=str(e))
+
+    if failed:
+        raise typer.Exit(code=1)
+
 
 @storage_app.command("list")
 def storage_list(
@@ -447,70 +409,36 @@ def service_install(
             typer.echo("No enabled devices found in configuration", err=True)
             raise typer.Exit(code=1)
     
-    # System paths
-    systemd_dir = Path("/etc/systemd/system")
-    project_dir = Path("/opt/meshtastic-tools")
-    venv_bin = project_dir / "venv" / "bin" / "meshtastic-tools"
-    config_path = Path("/etc/meshtastic-tools/config.yaml")
-    log_dir = project_dir / "logs"
-    
-    # Check permissions
     import os
+    import sys
     if os.geteuid() != 0:
         typer.echo("This command requires root privileges to write to /etc/systemd/system/", err=True)
-        typer.echo("Please run: sudo meshtastic-tools logger service-install", err=True)
         raise typer.Exit(code=1)
-    
-    # Create symlink for easier sudo access
-    symlink_path = Path("/usr/local/bin/meshtastic-tools")
-    if not symlink_path.exists():
-        try:
-            symlink_path.symlink_to(venv_bin)
-            typer.echo(f"  + Created symlink: {symlink_path} -> {venv_bin}")
-        except OSError as e:
-            typer.echo(f"  ! Could not create symlink: {e}", err=True)
-    
-    log_dir.mkdir(parents=True, exist_ok=True)
-    
-    for dev_name in devices:
-        service_file = systemd_dir / f"meshtastic-logger@{dev_name}.service"
-        timer_file = systemd_dir / f"meshtastic-logger@{dev_name}.timer"
-        
-        service_content = f"""[Unit]
-Description=Meshtastic Logger for {dev_name}
-After=network.target
+    if manager.loaded_path is None:
+        typer.echo("Create a configuration file before installing services", err=True)
+        raise typer.Exit(code=1)
 
-[Service]
-Type=oneshot
-ExecStart={venv_bin} --log-level {log_level} logger run
-WorkingDirectory={project_dir}
-Environment=MESHTASTIC_TOOLS_CONFIG={config_path}
-Environment=PATH={project_dir}/venv/bin:/usr/local/bin:/usr/bin
-StandardOutput=append:{log_dir}/{dev_name}.log
-StandardError=append:{log_dir}/{dev_name}-error.log
+    executable = Path(sys.executable).absolute()
+    import pwd
+    owner_uid = int(os.environ.get("SUDO_UID", manager.loaded_path.stat().st_uid))
+    service_user = pwd.getpwuid(owner_uid).pw_name
+    try:
+        units = [(name, render_service(name, executable, manager.loaded_path, log_level, service_user), render_timer(name))
+                 for name in devices]
+    except ValueError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(code=2)
 
-[Install]
-WantedBy=default.target
-"""
-        service_file.write_text(service_content)
-        
-        timer_content = f"""[Unit]
-Description=Meshtastic Logger timer for {dev_name}
+    for name, service, timer in units:
+        (SYSTEMD_DIR / f"meshtastic-logger@{name}.service").write_text(service)
+        (SYSTEMD_DIR / f"meshtastic-logger@{name}.timer").write_text(timer)
+        typer.echo(f"  + {name}")
 
-[Timer]
-OnCalendar=*:0/1
-Persistent=true
+    entrypoint = executable.parent / "meshtastic-tools"
+    if entrypoint.exists() and not CLI_SYMLINK.exists() and not CLI_SYMLINK.is_symlink():
+        CLI_SYMLINK.symlink_to(entrypoint)
+    _systemctl(["daemon-reload"])
 
-[Install]
-WantedBy=timers.target
-"""
-        timer_file.write_text(timer_content)
-        
-        typer.echo(f"  + {dev_name}")
-    
-    import subprocess
-    subprocess.run(["systemctl", "daemon-reload"], capture_output=True)
-    
     typer.echo(f"\nInstalled services for {len(devices)} device(s)")
     typer.echo("\nEnable and start with:")
     typer.echo("  sudo meshtastic-tools logger service-enable --device DEVICE_NAME")
@@ -533,26 +461,29 @@ def service_uninstall(
         typer.echo("Please run: sudo meshtastic-tools logger service-uninstall", err=True)
         raise typer.Exit(code=1)
     
-    systemd_dir = Path("/etc/systemd/system")
-    
+    if bool(device) == all_flag:
+        typer.echo("Choose either --device or --all", err=True)
+        raise typer.Exit(code=2)
+    systemd_dir = SYSTEMD_DIR
+
     patterns = []
     if device:
-        patterns = [f"meshtastic-logger@{device}.service", f"meshtastic-logger@{device}.timer"]
+        patterns = [f"meshtastic-logger@{device}.timer", f"meshtastic-logger@{device}.service"]
     else:
-        patterns = ["meshtastic-logger@*.service", "meshtastic-logger@*.timer"]
+        patterns = ["meshtastic-logger@*.timer", "meshtastic-logger@*.service"]
     
     removed = []
     import subprocess
     
     for pattern in patterns:
         for file in systemd_dir.glob(pattern):
-            service_name = file.stem
-            subprocess.run(["systemctl", "stop", service_name], capture_output=True)
-            subprocess.run(["systemctl", "disable", service_name], capture_output=True)
+            service_name = file.name
+            _systemctl(["stop", service_name])
+            _systemctl(["disable", service_name])
             file.unlink()
             removed.append(file.name)
     
-    subprocess.run(["systemctl", "daemon-reload"], capture_output=True)
+    _systemctl(["daemon-reload"])
     
     if removed:
         typer.echo(f"Removed {len(removed)} service(s):")
@@ -564,7 +495,7 @@ def service_uninstall(
     # Remove symlink if no services left
     remaining_services = list(systemd_dir.glob("meshtastic-logger@*.service"))
     if not remaining_services:
-        symlink_path = Path("/usr/local/bin/meshtastic-tools")
+        symlink_path = CLI_SYMLINK
         if symlink_path.exists() and symlink_path.is_symlink():
             symlink_path.unlink()
             typer.echo(f"  - Removed symlink: {symlink_path}")
@@ -589,7 +520,7 @@ def service_cleanup(
         typer.echo("  - Symlink /usr/local/bin/meshtastic-tools")
         typer.echo("  - Config directory /etc/meshtastic-tools/")
         typer.echo("  - Log files in /opt/meshtastic-tools/logs/")
-        typer.echo("  - Data files in /opt/meshtastic-tools/data/")
+        typer.echo("  - Collected data will be preserved")
         typer.echo("\nThe application in /opt/meshtastic-tools/ will NOT be removed.")
         response = typer.confirm("Are you sure?")
         if not response:
@@ -599,18 +530,18 @@ def service_cleanup(
     import subprocess
     
     # Stop and remove all services
-    systemd_dir = Path("/etc/systemd/system")
+    systemd_dir = SYSTEMD_DIR
     removed = []
     
-    for pattern in ["meshtastic-logger@*.service", "meshtastic-logger@*.timer"]:
+    for pattern in ["meshtastic-logger@*.timer", "meshtastic-logger@*.service"]:
         for file in systemd_dir.glob(pattern):
-            service_name = file.stem
-            subprocess.run(["systemctl", "stop", service_name], capture_output=True)
-            subprocess.run(["systemctl", "disable", service_name], capture_output=True)
+            service_name = file.name
+            _systemctl(["stop", service_name])
+            _systemctl(["disable", service_name])
             file.unlink()
             removed.append(file.name)
     
-    subprocess.run(["systemctl", "daemon-reload"], capture_output=True)
+    _systemctl(["daemon-reload"])
     
     if removed:
         typer.echo(f"\nRemoved {len(removed)} service(s):")
@@ -618,7 +549,7 @@ def service_cleanup(
             typer.echo(f"  - {name}")
     
     # Remove symlink
-    symlink_path = Path("/usr/local/bin/meshtastic-tools")
+    symlink_path = CLI_SYMLINK
     if symlink_path.exists():
         symlink_path.unlink()
         typer.echo(f"  - Removed symlink: {symlink_path}")
@@ -662,7 +593,10 @@ def service_enable(
         typer.echo("Please run: sudo meshtastic-tools logger service-enable", err=True)
         raise typer.Exit(code=1)
     
-    systemd_dir = Path("/etc/systemd/system")
+    if bool(device) == all_flag:
+        typer.echo("Choose either --device or --all", err=True)
+        raise typer.Exit(code=2)
+    systemd_dir = SYSTEMD_DIR
     
     devices = []
     if device:
@@ -684,11 +618,8 @@ def service_enable(
             cmd.append("--now")
         cmd.append(f"meshtastic-logger@{dev_name}.timer")
         
-        result = subprocess.run(cmd, capture_output=True)
-        if result.returncode == 0:
-            typer.echo(f"  + Enabled meshtastic-logger@{dev_name}.timer")
-        else:
-            typer.echo(f"  ! Failed to enable meshtastic-logger@{dev_name}.timer: {result.stderr.decode()}", err=True)
+        _systemctl(cmd[1:])
+        typer.echo(f"  + Enabled meshtastic-logger@{dev_name}.timer")
 
 
 @logger_app.command()
@@ -706,7 +637,10 @@ def service_disable(
         typer.echo("Please run: sudo meshtastic-tools logger service-disable", err=True)
         raise typer.Exit(code=1)
     
-    systemd_dir = Path("/etc/systemd/system")
+    if bool(device) == all_flag:
+        typer.echo("Choose either --device or --all", err=True)
+        raise typer.Exit(code=2)
+    systemd_dir = SYSTEMD_DIR
     
     devices = []
     if device:
@@ -728,11 +662,8 @@ def service_disable(
             cmd.append("--now")
         cmd.append(f"meshtastic-logger@{dev_name}.timer")
         
-        result = subprocess.run(cmd, capture_output=True)
-        if result.returncode == 0:
-            typer.echo(f"  - Disabled meshtastic-logger@{dev_name}.timer")
-        else:
-            typer.echo(f"  ! Failed: {result.stderr.decode()}", err=True)
+        _systemctl(cmd[1:])
+        typer.echo(f"  - Disabled meshtastic-logger@{dev_name}.timer")
 
 
 @logger_app.command()
@@ -740,11 +671,7 @@ def service_status():
     """Show status of installed logger services."""
     import subprocess
     
-    result = subprocess.run(
-        ["systemctl", "list-timers", "meshtastic-logger@*"],
-        capture_output=True,
-        text=True,
-    )
+    result = _systemctl(["list-timers", "meshtastic-logger@*"])
     
     if result.stdout.strip():
         typer.echo(result.stdout)
@@ -763,19 +690,14 @@ def service_logs(
     import subprocess
     from pathlib import Path
     
-    log_file = Path("/opt/meshtastic-tools") / "logs" / f"{device}.log"
-    
-    if not log_file.exists():
-        typer.echo(f"Log file not found: {log_file}")
-        raise typer.Exit(code=1)
-    
-    cmd = ["tail", "-n", str(lines)]
+    cmd = ["journalctl", "-u", f"meshtastic-logger@{device}.service", "-n", str(lines), "--no-pager"]
     if follow:
-        cmd.append("-f")
-    cmd.append(str(log_file))
-    
-    subprocess.run(cmd)
+        cmd.append("--follow")
+    result = subprocess.run(cmd)
+    if result.returncode:
+        raise typer.Exit(code=1)
+
 
 
 if __name__ == "__main__":
-    logger_app()            
+    logger_app()

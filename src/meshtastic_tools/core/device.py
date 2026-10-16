@@ -3,6 +3,7 @@
 import json
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
@@ -92,16 +93,18 @@ class DeviceInfo:
             long_name = owner.get('longName', long_name)
             short_name = owner.get('shortName', short_name)
         else:
-            owner_match = re.search(r'Owner:\s*(.+?)\s*\((\w+)\)', output)
+            owner_match = re.search(r'^Owner:\s*(.*?)\s*\((.*?)\)\s*$', output, re.MULTILINE)
             if owner_match:
                 long_name = owner_match.group(1).strip()
                 short_name = owner_match.group(2).strip()
             else:
                 long_name = f"Meshtastic {my_node_num:x}"[:20]
-                short_name = f"{my_node_num:x}"[:4]
+                short_name = f"{my_node_num:08x}"[-4:]
                 logger.warning(f"Could not parse owner info, using fallback: {long_name}")
         
-        node_id = f"!{short_name}"
+        if not 0 <= my_node_num <= 0xffffffff:
+            raise ValueError("myNodeNum must be an unsigned 32-bit node number")
+        node_id = f"!{my_node_num:08x}"
         
         return cls(
             my_node_num=my_node_num,
@@ -208,7 +211,8 @@ class DeviceManager:
         Raises:
             ConnectionError: If connection fails or timeout
         """
-        cmd = ["meshtastic"]
+        self._info = None
+        cmd = [sys.executable, "-m", "meshtastic"]
         cmd.extend(self.config.connection.get_cli_args())
         cmd.append("--info")
         
@@ -285,7 +289,7 @@ class DeviceManager:
         Raises:
             ConnectionError: If command fails
         """
-        full_cmd = ["meshtastic"]
+        full_cmd = [sys.executable, "-m", "meshtastic"]
         full_cmd.extend(self.config.connection.get_cli_args())
         full_cmd.extend(command)
         
@@ -447,7 +451,7 @@ class DeviceRegistry:
             }
             
             if include_status:
-                if manager.info:
+                if manager.is_connected and manager.info:
                     device_info.update({
                         "connected": True,
                         "node_id": manager.info.node_id,

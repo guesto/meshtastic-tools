@@ -27,7 +27,7 @@ Metadata: { "firmwareVersion": "2.7.22.96dd647", "deviceStateVersion": 24, "canS
         assert info.my_node_num == 111111111
         assert info.long_name == "Meshtastic c3d4"
         assert info.short_name == "c3d4"
-        assert info.node_id == "!c3d4"
+        assert info.node_id == f"!{111111111:08x}"
         assert info.firmware_version == "2.7.22.96dd647"
         assert info.hw_model == "HELTEC_V4"
         assert info.role == "CLIENT"

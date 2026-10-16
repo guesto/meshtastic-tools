@@ -60,10 +60,10 @@ Schedule "*/5 * * * *" per device
  meshtastic-tools logger run
          │
          ▼
- Checks if device is due ──▶ Skips if not due
+ Checks cron time + saved checkpoint ──▶ Skips completed times
          │
          ▼
- Runs: meshtastic --host <addr> --info
+ Runs: Python Meshtastic CLI --host <addr> --info
          │
          ▼
  Saves: /opt/meshtastic-tools/data/logger/<device>/info/info_<device>_<timestamp>.txt
@@ -71,6 +71,11 @@ Schedule "*/5 * * * *" per device
          ▼
  Cleans up old files per retention policy
 ```
+
+Snapshots redact credentials and use private file permissions. Each service collects
+only its selected device; persistent checkpoints and locks prevent overlapping collection.
+Service logs are available through `logger service-logs` (systemd journal).
+See the usage guide for applying updated units to an existing installation.
 
 ## Project Structure
 

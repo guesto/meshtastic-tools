@@ -33,6 +33,7 @@ _log_level_option = typer.Option(
     "WARNING",
     "--log-level",
     "-l",
+    envvar="MESHTASTIC_LOG_LEVEL",
     help="Log level (DEBUG, INFO, WARNING, ERROR)",
 )
 
@@ -67,7 +68,7 @@ def config_show(
     """Show current configuration."""
     import yaml
     
-    manager = ConfigManager()
+    manager = ConfigManager(strict=True)
     
     try:
         manager.load()
@@ -90,7 +91,7 @@ def config_show(
 @app.command()
 def config_validate():
     """Validate configuration and show warnings."""
-    manager = ConfigManager()
+    manager = ConfigManager(strict=True)
     
     try:
         manager.load()
@@ -115,12 +116,14 @@ def config_validate():
             typer.echo(f"  • {name}")
     else:
         typer.echo("\n[WARN]  No devices configured")
+    if warnings:
+        raise typer.Exit(code=1)
 
 
 @app.command()
 def config_path():
     """Show configuration file path."""
-    manager = ConfigManager()
+    manager = ConfigManager(strict=True)
     
     paths = [
         Path("/etc/meshtastic-tools/config.yaml"),
@@ -144,7 +147,7 @@ def devices_list(
     check: bool = typer.Option(False, "--check", "-c", help="Check connection status"),
 ):
     """List all configured devices."""
-    manager = ConfigManager()
+    manager = ConfigManager(strict=True)
     
     try:
         manager.load()
@@ -159,6 +162,8 @@ def devices_list(
         return
     
     registry = DeviceRegistry(devices)
+    if check:
+        registry.check_all_devices()
     
     typer.echo(f"\n[DEVICES] Devices ({len(devices)}):\n")
     
@@ -192,6 +197,9 @@ def devices_list(
         
         typer.echo()
 
+    if check and any(not manager.is_connected for manager in registry.get_all_managers().values()):
+        raise typer.Exit(code=1)
+
 
 @app.command()
 def devices_show(
@@ -200,7 +208,7 @@ def devices_show(
     telemetry: bool = typer.Option(False, "--telemetry", "-t", help="Also show device telemetry"),
 ):
     """Show detailed information about a device."""
-    manager = ConfigManager()
+    manager = ConfigManager(strict=True)
     
     try:
         manager.load()
@@ -266,9 +274,13 @@ def devices_show(
                 typer.echo(f"    {telemetry_result.stdout.strip()}")
             except Exception as e:
                 typer.echo(f"    Could not fetch telemetry: {e}")
+                raise typer.Exit(code=1)
 
+    except typer.Exit:
+        raise
     except Exception as e:
         typer.echo(f"\n  [WARN]  Could not fetch device info: {e}", err=True)
+        raise typer.Exit(code=1)
 
 @app.command()
 def devices_check(
@@ -280,7 +292,7 @@ def devices_check(
         typer.echo("Please specify --device or --all", err=True)
         raise typer.Exit(code=1)
     
-    manager = ConfigManager()
+    manager = ConfigManager(strict=True)
     
     try:
         manager.load()
@@ -325,13 +337,15 @@ def devices_check(
                 typer.echo(f"  ✗ {name}: {message}")
         
         typer.echo(f"\n  {success_count}/{len(devices)} devices connected")
+        if success_count != len(devices):
+            raise typer.Exit(code=1)
 
 @app.command()
 def devices_test(
     device: str = typer.Option(..., "--device", "-d", help="Device name"),
 ):
     """Test connection and show raw info output."""
-    manager = ConfigManager()
+    manager = ConfigManager(strict=True)
     
     try:
         manager.load()
@@ -352,7 +366,8 @@ def devices_test(
     
     typer.echo(f"\nTesting connection to {device}...\n")
     
-    cmd = ["meshtastic"]
+    import sys
+    cmd = [sys.executable, "-m", "meshtastic"]
     cmd.extend(device_config.connection.get_cli_args())
     cmd.append("--info")
     

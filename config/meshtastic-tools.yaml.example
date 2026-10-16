@@ -23,7 +23,7 @@ devices:
   #   connection:
   #     type: port
   #     address: /dev/ttyUSB0
-  #     baudrate: 115200
+  #     baudrate: 115200  # fixed rate; other values are unsupported
   #     timeout: 30
   #   metadata:
   #     description: "Node on the roof"
@@ -51,7 +51,7 @@ tools:
       
       # Retention policy (can use one or both)
       retention_days: 30     # Keep files for N days
-      max_files: 1000        # Keep at most N files per device
+      max_files: 50        # Keep at most N files per device across all collectors
       
       # Filename format
       # Available variables: {device}, {timestamp}

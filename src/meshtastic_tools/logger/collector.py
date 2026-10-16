@@ -1,12 +1,10 @@
 """Data collector for Meshtastic devices."""
 
-import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from meshtastic_tools.core.device import DeviceManager
-from meshtastic_tools.core.exceptions import CollectionError, ConnectionError
+from meshtastic_tools.core.exceptions import CollectionError
 from meshtastic_tools.core.logging_config import get_logger
 from meshtastic_tools.logger.storage import StorageManager
 
@@ -56,10 +54,8 @@ class MeshtasticCollector:
             
             return filepath
             
-        except ConnectionError as e:
-            raise CollectionError(f"Failed to collect info from {self.device.name}: {e}")
         except Exception as e:
-            raise CollectionError(f"Unexpected error collecting from {self.device.name}: {e}")
+            raise CollectionError(f"Failed to collect info from {self.device.name}: {e}") from e
     
     def collect_telemetry(self) -> Path:
         """
@@ -82,7 +78,7 @@ class MeshtasticCollector:
                 ["--request-telemetry", "--dest", device_info.node_id]
             )
             
-            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")
             filename = f"telemetry_{self.device.name}_{timestamp}.txt"
             
             filepath = self.storage.save(result.stdout, filename)
@@ -94,8 +90,8 @@ class MeshtasticCollector:
             
             return filepath
             
-        except ConnectionError as e:
-            raise CollectionError(f"Failed to collect telemetry from {self.device.name}: {e}")
+        except Exception as e:
+            raise CollectionError(f"Failed to collect telemetry from {self.device.name}: {e}") from e
     
     def collect_nodes(self) -> Path:
         """
@@ -112,7 +108,7 @@ class MeshtasticCollector:
         try:
             result = self.device.execute_command(["--nodes"])
             
-            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")
             filename = f"nodes_{self.device.name}_{timestamp}.txt"
             
             filepath = self.storage.save(result.stdout, filename)
@@ -124,5 +120,15 @@ class MeshtasticCollector:
             
             return filepath
             
-        except ConnectionError as e:
-            raise CollectionError(f"Failed to collect nodes from {self.device.name}: {e}")
+        except Exception as e:
+            raise CollectionError(f"Failed to collect nodes from {self.device.name}: {e}") from e
+
+    def collect_position(self) -> Path:
+        """Request the connected node's position and store the response."""
+        try:
+            info = self.device.get_info()
+            result = self.device.execute_command(["--request-position", "--dest", info.node_id])
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")
+            return self.storage.save(result.stdout, f"position_{self.device.name}_{timestamp}.txt")
+        except Exception as e:
+            raise CollectionError(f"Failed to collect position from {self.device.name}: {e}") from e

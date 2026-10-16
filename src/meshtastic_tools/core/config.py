@@ -1,6 +1,7 @@
 """Configuration management with multi-level support."""
 
 import os
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -9,6 +10,8 @@ from typing import Any, Dict, List, Optional
 import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, ValidationError as PydanticValidationError
+from pydantic import field_validator, model_validator
+from croniter import croniter
 
 from meshtastic_tools.core.exceptions import ConfigError, ValidationError
 
@@ -46,14 +49,46 @@ class PydanticStorageConfig(BaseModel):
     max_files: Optional[int] = Field(default=None, ge=1)
     filename_format: str = "info_{device}_{timestamp}.txt"
 
+    @field_validator("filename_format")
+    @classmethod
+    def validate_filename(cls, value: str) -> str:
+        try:
+            filename = value.format(device="device", timestamp="timestamp")
+        except (KeyError, ValueError, IndexError) as e:
+            raise ValueError(f"Invalid filename_format: {e}") from e
+        if not filename or Path(filename).name != filename or filename.startswith("."):
+            raise ValueError("filename_format must be a filename, not a path or hidden file")
+        return value
+
+
+class PydanticLoggerDeviceConfig(BaseModel):
+    """Validate schedules before a collector can contact any device."""
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    schedule: Optional[str] = None
+
+    @field_validator("schedule")
+    @classmethod
+    def validate_schedule(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and (len(value.split()) != 5 or not croniter.is_valid(value)):
+            raise ValueError("schedule must be a valid five-field cron expression")
+        return value
+
+    @model_validator(mode="after")
+    def require_schedule(self):
+        if self.enabled and not self.schedule:
+            raise ValueError("An enabled logger device requires a schedule")
+        return self
+
 
 class PydanticLoggerToolConfig(BaseModel):
     """Pydantic model for logger tool configuration validation."""
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
     
     enabled: bool = True
     storage: PydanticStorageConfig
-    devices: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    devices: Dict[str, PydanticLoggerDeviceConfig] = Field(default_factory=dict)
 
 
 @dataclass
@@ -76,6 +111,9 @@ class ConnectionConfig:
             raise ValidationError(
                 f"Connection address is empty for type '{validated.type}'"
             )
+
+        if validated.type == ConnectionType.PORT and validated.baudrate not in (None, 115200):
+            raise ValidationError("Meshtastic CLI uses a fixed serial baudrate of 115200")
         
         if validated.type == ConnectionType.HOST:
             if not validated.address:
@@ -99,10 +137,9 @@ class ConnectionConfig:
         if self.type == ConnectionType.HOST:
             return ["--host", self.address]
         elif self.type == ConnectionType.PORT:
-            args = ["--port", self.address]
-            if self.baudrate:
-                args.extend(["--baudrate", str(self.baudrate)])
-            return args
+            if self.baudrate not in (None, 115200):
+                raise ValueError("Meshtastic CLI uses a fixed serial baudrate of 115200")
+            return ["--port", self.address]
         elif self.type == ConnectionType.BLE:
             return ["--ble", self.address]
         else:
@@ -119,6 +156,8 @@ class DeviceConfig:
     @classmethod
     def from_dict(cls, name: str, data: Dict[str, Any]) -> "DeviceConfig":
         """Create from dictionary with validation."""
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_!@#.-]+", name) or name in (".", ".."):
+            raise ValidationError("Device names must be safe directory and systemd instance names")
         try:
             validated = PydanticDeviceConfig(**data)
         except PydanticValidationError as e:
@@ -175,7 +214,7 @@ class LoggerToolConfig:
             return cls(
                 enabled=validated.enabled,
                 storage=StorageConfig.from_dict(validated.storage.model_dump()),
-                devices=validated.devices,
+                devices={name: config.model_dump() for name, config in validated.devices.items()},
             )
         except PydanticValidationError as e:
             raise ValidationError(f"Invalid logger tool configuration: {e}")
@@ -214,21 +253,30 @@ class ConfigManager:
         self._config: Dict[str, Any] = {}
         self._devices: Dict[str, DeviceConfig] = {}
         self._logger_config: Optional[LoggerToolConfig] = None
+        self.loaded_path: Optional[Path] = None
         
     def load(self) -> None:
         """Load configuration from files."""
-        paths_to_try = [self.config_path] if self.config_path else self.DEFAULT_CONFIG_PATHS
-        
+        paths_to_try = list(self.DEFAULT_CONFIG_PATHS)
         env_config = os.getenv("MESHTASTIC_TOOLS_CONFIG")
-        if env_config:
-            paths_to_try.insert(0, Path(env_config))
+        explicit_path = self.config_path or (Path(env_config) if env_config else None)
+        if explicit_path:
+            paths_to_try = [explicit_path]
+            if not explicit_path.is_file():
+                raise ConfigError(f"Configuration file not found: {explicit_path}")
+
+        self._devices = {}
+        self._logger_config = None
+        self.loaded_path = None
         
         config_loaded = False
         for path in paths_to_try:
             if path and path.exists():
                 try:
                     with open(path, "r") as f:
-                        self._config = yaml.safe_load(f) or {}
+                        loaded = yaml.safe_load(f)
+                        self._config = {} if loaded is None else loaded
+                    self.loaded_path = path.resolve()
                     config_loaded = True
                     break
                 except Exception as e:
@@ -236,6 +284,9 @@ class ConfigManager:
         
         if not config_loaded:
             self._create_default_config()
+
+        if not isinstance(self._config, dict):
+            raise ConfigError("Configuration must be a YAML mapping")
         
         self._parse_devices()
         self._parse_logger_config()
@@ -250,7 +301,7 @@ class ConfigManager:
                     "storage": {
                         "data_dir": "data/logger",
                         "retention_days": 30,
-                        "max_files": 1000,
+                        "max_files": 50,
                         "filename_format": "info_{device}_{timestamp}.txt",
                     },
                     "devices": {},
@@ -329,11 +380,22 @@ class ConfigManager:
     def _parse_logger_config(self) -> None:
         """Parse logger tool configuration."""
         tools = self._config.get("tools", {})
+        if not isinstance(tools, dict):
+            raise ConfigError("'tools' section must be a dictionary")
         logger_data = tools.get("logger", {})
+        if not isinstance(logger_data, dict):
+            raise ConfigError("'tools.logger' section must be a dictionary")
         
         if logger_data:
             try:
                 self._logger_config = LoggerToolConfig.from_dict(logger_data)
+                storage = self._logger_config.storage
+                if not storage.data_dir.is_absolute():
+                    base = self.loaded_path.parent if self.loaded_path else Path.cwd()
+                    storage.data_dir = (base / storage.data_dir).resolve()
+                unknown = set(self._logger_config.devices) - set(self._devices)
+                if unknown:
+                    raise ConfigError(f"Logger references undefined devices: {', '.join(sorted(unknown))}")
             except ValidationError as e:
                 raise ConfigError(f"Invalid logger configuration: {e}")
     
@@ -391,7 +453,7 @@ class ConfigManager:
             
             if self._logger_config and self._logger_config.enabled:
                 if name in self._logger_config.devices:
-                    if not self._logger_config.devices[name].get("schedule"):
+                    if self._logger_config.is_device_enabled(name) and not self._logger_config.get_device_schedule(name):
                         warnings.append(f"Device '{name}' has no schedule configured")
                 else:
                     warnings.append(f"Device '{name}' not configured in logger tool")

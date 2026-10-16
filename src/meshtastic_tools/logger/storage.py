@@ -1,7 +1,8 @@
 """Storage management for logger tool."""
 
 import os
-import shutil
+import re
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -9,6 +10,7 @@ from typing import List, Optional, Tuple
 from meshtastic_tools.core.config import StorageConfig
 from meshtastic_tools.core.exceptions import StorageError
 from meshtastic_tools.core.logging_config import get_logger
+from meshtastic_tools.logger.privacy import redact_secrets
 
 
 class StorageManager:
@@ -33,7 +35,13 @@ class StorageManager:
     def _ensure_directory(self) -> None:
         """Create storage directory if it doesn't exist."""
         try:
-            self.device_path.mkdir(parents=True, exist_ok=True)
+            for directory in (self.config.data_dir, self.device_path.parent, self.device_path):
+                directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+                directory.chmod(0o700)
+            # Protect snapshots created by older versions as well.
+            for file in self.device_path.iterdir():
+                if file.is_file() and not file.is_symlink():
+                    file.chmod(0o600)
         except OSError as e:
             raise StorageError(f"Failed to create storage directory {self.device_path}: {e}")
     
@@ -44,16 +52,15 @@ class StorageManager:
         
         Returns datetime if found, None otherwise.
         """
-        parts = filename.replace('.txt', '').split('_')
-        for i, part in enumerate(parts):
-            if len(part) == 10 and part[4] == '-' and part[7] == '-':
-                date_str = part
-                if i + 1 < len(parts) and len(parts[i + 1]) == 8 and parts[i + 1][2] == '-':
-                    time_str = parts[i + 1]
-                    try:
-                        return datetime.strptime(f"{date_str}_{time_str}", "%Y-%m-%d_%H-%M-%S")
-                    except ValueError:
-                        pass
+        matches = list(re.finditer(r"(?:^|_)(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})(?:-(\d{6}))?(?=\.|_|$)", filename))
+        for match in reversed(matches):
+            try:
+                value = match.group(1)
+                if match.group(2):
+                    return datetime.strptime(value + "-" + match.group(2), "%Y-%m-%d_%H-%M-%S-%f")
+                return datetime.strptime(value, "%Y-%m-%d_%H-%M-%S")
+            except ValueError:
+                continue
         return None
     
     def generate_filename(self, timestamp: Optional[datetime] = None) -> str:
@@ -69,7 +76,7 @@ class StorageManager:
         if timestamp is None:
             timestamp = datetime.now()
         
-        timestamp_str = timestamp.strftime("%Y-%m-%d_%H-%M-%S")
+        timestamp_str = timestamp.strftime("%Y-%m-%d_%H-%M-%S-%f")
         
         # Format filename
         filename = self.config.filename_format.format(
@@ -81,6 +88,8 @@ class StorageManager:
     
     def get_file_path(self, filename: str) -> Path:
         """Get full path for a filename."""
+        if not filename or Path(filename).name != filename or filename.startswith("."):
+            raise StorageError("Snapshot filename must not contain a path or start with a dot")
         return self.device_path / filename
     
     def save(self, content: str, filename: Optional[str] = None) -> Path:
@@ -101,18 +110,23 @@ class StorageManager:
             filename = self.generate_filename()
         
         filepath = self.get_file_path(filename)
-        temp_path = filepath.with_suffix(".tmp")
-        
+        temp_path = None
         try:
-            temp_path.write_text(content, encoding="utf-8")
-            temp_path.rename(filepath)
+            content = redact_secrets(content)
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.device_path,
+                                             prefix=".snapshot-", suffix=".tmp", delete=False) as temp:
+                temp_path = Path(temp.name)
+                temp.write(content)
+                temp.flush()
+                os.fsync(temp.fileno())
+            os.replace(temp_path, filepath)
             
             self.logger.debug(f"Saved file: {filepath}", size_bytes=len(content))
             
             return filepath
             
         except OSError as e:
-            if temp_path.exists():
+            if temp_path is not None and temp_path.exists():
                 temp_path.unlink(missing_ok=True)
             raise StorageError(f"Failed to save file {filepath}: {e}")
     
@@ -121,7 +135,7 @@ class StorageManager:
         Scan directory using os.scandir() for memory efficiency.
         
         Returns list of (path, parsed_timestamp) tuples, sorted by timestamp descending.
-        Files without parsable timestamp go last.
+        Files without a timestamp use filesystem mtime.
         """
         if not self.device_path.exists():
             return []
@@ -130,17 +144,22 @@ class StorageManager:
         
         with os.scandir(self.device_path) as it:
             for entry in it:
-                if entry.is_file() and entry.name.endswith('.txt'):
+                if self._is_snapshot(entry):
                     filepath = Path(entry.path)
-                    timestamp = self._parse_timestamp_from_filename(entry.name)
+                    timestamp = self._parse_timestamp_from_filename(entry.name) or datetime.fromtimestamp(entry.stat().st_mtime)
                     entries.append((filepath, timestamp))
         
         entries.sort(
-            key=lambda x: (x[1] is None, x[1] or datetime.min),
+            key=lambda x: (x[1], x[0].name),
             reverse=True
         )
         
         return entries
+
+    def _is_snapshot(self, entry) -> bool:
+        suffixes = {".txt", Path(self.config.filename_format).suffix}
+        return (not entry.name.startswith(".") and entry.is_file(follow_symlinks=False)
+                and Path(entry.name).suffix in suffixes)
     
     def list_files(self, sort_by: str = "time") -> List[Path]:
         """
@@ -158,7 +177,7 @@ class StorageManager:
             files = []
             with os.scandir(self.device_path) as it:
                 for entry in it:
-                    if entry.is_file() and entry.name.endswith('.txt'):
+                    if self._is_snapshot(entry):
                         files.append(Path(entry.path))
             files.sort(key=lambda p: p.name, reverse=True)
             return files
@@ -234,17 +253,22 @@ class StorageManager:
         
         to_delete = list(set(to_delete))
         
-        bytes_to_free = sum(f.stat().st_size for f in to_delete)
-        
-        if not dry_run:
-            for file in to_delete:
-                try:
+        return self._delete_files(to_delete, dry_run)
+
+    def _delete_files(self, files: List[Path], dry_run: bool = False) -> Tuple[int, int]:
+        count = size = 0
+        for file in files:
+            try:
+                file_size = file.stat().st_size
+                if not dry_run:
                     file.unlink()
-                    self.logger.debug(f"Deleted old file: {file}")
-                except OSError as e:
-                    self.logger.warning(f"Failed to delete {file}: {e}")
-        
-        return len(to_delete), bytes_to_free
+                count += 1
+                size += file_size
+            except FileNotFoundError:
+                continue
+            except OSError as e:
+                raise StorageError(f"Failed to delete {file}: {e}") from e
+        return count, size
     
     def purge(self) -> Tuple[int, int]:
         """
@@ -255,16 +279,7 @@ class StorageManager:
         """
         scanned = self._scan_files()
         
-        total_size = sum(f[0].stat().st_size for f in scanned)
-        
-        for filepath, ts in scanned:
-            try:
-                filepath.unlink()
-                self.logger.debug(f"Purged file: {filepath}")
-            except OSError as e:
-                self.logger.warning(f"Failed to purge {filepath}: {e}")
-        
-        return len(scanned), total_size
+        return self._delete_files([path for path, _ in scanned])
 
 
 class GlobalStorageManager:
@@ -281,7 +296,8 @@ class GlobalStorageManager:
         self.logger = get_logger(__name__)
         
         try:
-            config.data_dir.mkdir(parents=True, exist_ok=True)
+            config.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            config.data_dir.chmod(0o700)
         except OSError as e:
             raise StorageError(f"Failed to create storage directory {config.data_dir}: {e}")
     
@@ -307,7 +323,9 @@ class GlobalStorageManager:
                     if info_path.exists():
                         try:
                             with os.scandir(info_path) as info_it:
-                                if any(e.is_file() and e.name.endswith('.txt') for e in info_it):
+                                suffixes = {".txt", Path(self.config.filename_format).suffix}
+                                if any(e.is_file(follow_symlinks=False) and not e.name.startswith('.')
+                                       and Path(e.name).suffix in suffixes for e in info_it):
                                     devices.append(entry.name)
                         except OSError:
                             pass

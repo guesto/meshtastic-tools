@@ -73,9 +73,10 @@
    journalctl -u meshtastic-logger@DEVICE_NAME.service -n 50
    ```
 
-6. Reload systemd after config changes:
+6. Regenerate units after upgrading the service installer, then reload systemd:
    ```
-   systemctl daemon-reload
+   sudo meshtastic-tools logger service-install
+   sudo systemctl daemon-reload
    ```
 
 ### Config file not found
@@ -131,10 +132,9 @@
    meshtastic-tools logger service-logs DEVICE_NAME
    ```
 
-3. Log files location (when using systemd service):
+3. Service logs, including stderr, are in the systemd journal:
    ```
-   cat /opt/meshtastic-tools/logs/DEVICE_NAME.log
-   cat /opt/meshtastic-tools/logs/DEVICE_NAME-error.log
+   journalctl -u meshtastic-logger@DEVICE_NAME.service -n 50 --no-pager
    ```
 
 4. By default logs go to stderr, redirect to file if needed:
