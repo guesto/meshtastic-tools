@@ -8,12 +8,13 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 from zoneinfo import ZoneInfo
 
 import pytest
 import yaml
 from rich.console import Console
+from rich.text import Text
 from typer.testing import CliRunner
 
 from meshtastic_tools.cli import app
@@ -321,6 +322,120 @@ def test_cli_uses_rich_in_a_terminal_and_honors_no_color(configured, monkeypatch
     assert ("\x1b" in result.output) is not no_color
     plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
     assert max(len(line) for line in plain.splitlines()) == 110
+
+
+def test_watch_with_json_is_rejected():
+    result = CliRunner().invoke(app, ["dashboard", "--watch", "--json"])
+    assert result.exit_code == 2, result.output
+    assert "--watch cannot be combined with --json" in result.output
+
+
+def test_watch_requires_terminal():
+    result = CliRunner().invoke(app, ["dashboard", "--watch"])
+    assert result.exit_code == 2, result.output
+    assert "--watch requires a terminal" in result.output
+
+
+@pytest.fixture
+def watch_terminal(monkeypatch):
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setattr("rich.console.Console", lambda **kwargs: Console(
+        **kwargs, height=25, force_terminal=True,
+    ))
+
+
+@pytest.mark.parametrize("args,interval", [(["--watch"], 5.0), (["-w", "--interval", "0.1"], 0.1)])
+def test_watch_renders_at_least_once_and_handles_ctrl_c(configured, monkeypatch, watch_terminal, args, interval):
+    sleep = Mock(side_effect=[None, KeyboardInterrupt])
+    monkeypatch.setattr(time, "sleep", sleep)
+    collect_spy = Mock(wraps=dashboard.collect_dashboard_data)
+    render_spy = Mock(wraps=dashboard.render_rich)
+    monkeypatch.setattr(dashboard, "collect_dashboard_data", collect_spy)
+    monkeypatch.setattr(dashboard, "render_rich", render_spy)
+
+    result = CliRunner().invoke(app, ["--config", str(configured.loaded_path), "dashboard",
+                                      "--width", "120", "--no-color", *args], color=True)
+
+    assert result.exit_code == 0, result.output
+    assert collect_spy.call_count == 2  # Initial snapshot and one refresh.
+    assert render_spy.call_count == 2
+    assert "MESHTASTIC LOGGER" in result.output
+    assert "\x1b[?1049h" in result.output  # Alternate screen entered and restored.
+    assert "\x1b[?1049l" in result.output
+    assert "\x1b[?25h" in result.output  # Cursor restored.
+    assert not re.search(r"\x1b\[[0-9;]*m", result.output)  # --no-color applies to Live.
+    assert [call.args for call in sleep.call_args_list] == [(interval,), (interval,)]
+
+
+@pytest.mark.parametrize("error_source", ["collect", "render"])
+def test_watch_displays_update_errors_and_recovers(configured, monkeypatch, watch_terminal, error_source):
+    initial = collect(configured, device="alpha")
+    recovered = collect(configured, device="alpha")
+    collect_spy = Mock(side_effect=[initial, RuntimeError("temporary failure"), recovered]
+                       if error_source == "collect" else [initial, initial, recovered])
+    render_spy = Mock(side_effect=[Text("initial"), RuntimeError("temporary failure"), Text("recovered")]
+                      if error_source == "render" else [Text("initial"), Text("recovered")])
+    monkeypatch.setattr(dashboard, "collect_dashboard_data", collect_spy)
+    monkeypatch.setattr(dashboard, "render_rich", render_spy)
+    monkeypatch.setattr(time, "sleep", Mock(side_effect=[None, None, KeyboardInterrupt]))
+    live_factory = MagicMock()
+    monkeypatch.setattr("rich.live.Live", live_factory)
+
+    result = CliRunner().invoke(app, ["--config", str(configured.loaded_path), "dashboard", "--watch",
+                                      "--device", "alpha", "--width", "100", "--page", "1", "--layout", "single"])
+
+    assert result.exit_code == 0, result.output
+    assert collect_spy.call_count == 3
+    assert all(call.kwargs == {"device": "alpha"} for call in collect_spy.call_args_list)
+    assert render_spy.call_args.args == (recovered, 100, 1, False, "single")
+    assert render_spy.call_args.kwargs == {"height": 25}
+    live_kwargs = live_factory.call_args.kwargs
+    assert live_kwargs["screen"] is True
+    assert live_kwargs["refresh_per_second"] == 4
+    assert live_kwargs["console"].width == 100
+    updates = live_factory.return_value.__enter__.return_value.update.call_args_list
+    assert len(updates) == 2
+    assert updates[0].args[0].plain == "Error: temporary failure"
+    assert updates[0].args[0].style == "red"
+    assert updates[1].args[0].plain == "recovered"
+    live_factory.return_value.__exit__.assert_called_once()
+
+
+@pytest.mark.parametrize("interval", ["0", "-1", "0.09"])
+def test_watch_interval_must_be_at_least_point_one(interval):
+    result = CliRunner().invoke(app, ["dashboard", "--watch", "--interval", interval])
+    assert result.exit_code == 2, result.output
+    assert "--interval" in result.output
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_static_mode_still_works(configured, monkeypatch, terminal):
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setattr("rich.console.Console", lambda **kwargs: Console(
+        **kwargs, height=25, force_terminal=terminal,
+    ))
+    collect_spy = Mock(wraps=dashboard.collect_dashboard_data)
+    render_spy = Mock(wraps=dashboard.render_rich)
+    text_spy = Mock(wraps=dashboard.render_text)
+    live = Mock(side_effect=AssertionError("static mode must not use Live"))
+    sleep = Mock(side_effect=AssertionError("static mode must not sleep"))
+    monkeypatch.setattr(dashboard, "collect_dashboard_data", collect_spy)
+    monkeypatch.setattr(dashboard, "render_rich", render_spy)
+    monkeypatch.setattr(dashboard, "render_text", text_spy)
+    monkeypatch.setattr("rich.live.Live", live)
+    monkeypatch.setattr(time, "sleep", sleep)
+    args = ["--config", str(configured.loaded_path), "dashboard", "--width", "120"]
+
+    result = CliRunner().invoke(app, args)
+
+    assert result.exit_code == 0, result.output
+    assert "--watch" not in args and "-w" not in args
+    collect_spy.assert_called_once()
+    assert render_spy.call_count == int(terminal)
+    assert text_spy.call_count == int(not terminal)
+    assert result.output.count("MESHTASTIC LOGGER") == 1
+    live.assert_not_called()
+    sleep.assert_not_called()
 
 
 @pytest.mark.parametrize("timezone_name", ["local", "America/New_York"])

@@ -57,6 +57,9 @@ meshtastic-tools dashboard --json
 meshtastic-tools dashboard --width 120 --layout split
 meshtastic-tools dashboard --all --page 2
 
+# Live dashboard (refreshes every 5 seconds)
+meshtastic-tools dashboard --watch
+
 # Logger: install and enable automatic collection
 sudo /opt/meshtastic-tools/venv/bin/meshtastic-tools logger service-install
 sudo meshtastic-tools logger service-enable --all

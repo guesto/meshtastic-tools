@@ -4,7 +4,7 @@ This document describes the general visual language used across all
 Meshtastic Tools interfaces: CLI commands, dashboards, analyzers, and
 any future tools. It defines principles, formatting rules, colors, and
 adaptive behavior. Layer-specific documents (for example
-`ui-dashboard-layer1.md`) build on top of this guide and add their own
+`dashboard.md`) build on top of this guide and add their own
 layout and content.
 
 The style is inspired by cockpit instrument panels (CDU / GPS monitor):
@@ -181,7 +181,7 @@ Labels: `low`, `medium`, `high`. If the metric is missing, show
 `—    ○ unknown` with a gray empty circle.
 
 Thresholds are defined per metric in the layer-specific document (for
-example `dashboard-layer1.md`).
+example `dashboard.md`).
 
 ## Progress bars
 
@@ -285,7 +285,7 @@ JSON:  2026-10-16T20:43:43.774055+05:00
 
 Layer-specific documents:
 
-- `dashboard-layer1.md` — logger dashboard (Layer 1).
+- `dashboard.md` — logger dashboard.
 - Layer 2 (live mode) — planned.
 - Layer 3 (trends and charts) — planned.
 - Layer 4 (analyzer) — planned.

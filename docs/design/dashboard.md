@@ -1,4 +1,4 @@
-# Layer 1: Logger Dashboard
+# Logger Dashboard
 
 ## Status
 Approved — ready for implementation.
@@ -13,7 +13,7 @@ and **without side effects on disk** when reading.
 
 General UI principles (formats, colors, conventions) are in
 `ui-guide.md`. This document covers both the contract and the visual
-layout of Layer 1.
+layout of the dashboard, including live updates.
 
 ## Background
 
@@ -36,7 +36,7 @@ makes the timeline meaningful.
 
 In scope:
 
-- Command `dashboard` with static output (one snapshot of state).
+- Command `dashboard` with static output (one snapshot of state) or live updates.
 - Two-column layout: left — logger, right — node.
 - Top bar with the tool title, timezone, and device summary.
 - Pseudo-graphic panel with sections: timeline, collection, storage,
@@ -44,14 +44,13 @@ In scope:
 - **Event history** `.timeline.json` per device: `snapshot`, `missing`,
   `error`. Written by the logger on each scheduled or manual collection.
 - Parameters: `--device`, `--json`, `--no-color`, `--width`, `--page`,
-  `--all`, `--layout`.
+  `--all`, `--layout`, `--watch`, `--interval`.
 - Plain-text fallback (for pipes and narrow terminals).
 - Adaptive layout by terminal width and height.
 - Tests: timeline history, snapshot parser, renderer, edge cases.
 
 Out of scope:
 
-- Live mode (`--watch`) — Layer 2.
 - Sparklines, historical charts, trends — Layer 3.
 - Long-term collection journal (beyond the `.timeline.json` ring) —
   Layer 3.
@@ -464,6 +463,8 @@ dashboard
   [--device NAME]
   [--page N]
   [--json]
+  [--watch | -w]
+  [--interval SECONDS]
   [--no-color]
   [--width N]
   [--all]
@@ -477,6 +478,25 @@ dashboard
 - `--width N` — force terminal width (for tests and documentation).
 - `--all` — show summary only, no detail panel.
 - `--layout auto|single|split` — force layout mode.
+
+### Live mode
+
+`meshtastic-tools dashboard --watch` (or `-w`) continuously refreshes the
+dashboard from local files without contacting devices. The first snapshot
+appears immediately; `--interval SECONDS` sets the delay between subsequent
+reads (default: 5 seconds, minimum: 0.1 seconds).
+
+Live mode requires a terminal and cannot be combined with `--json`. It uses
+Rich's alternate screen with `refresh_per_second=4`; Ctrl+C exits cleanly
+and restores the original screen and cursor. Errors during an update appear
+in red as `Error: ...`, and the loop continues, retrying after the interval.
+The selected device, page, summary, layout, width and color options apply
+to every frame. Without `--watch`, the command prints one snapshot and exits.
+
+```bash
+meshtastic-tools dashboard --watch
+meshtastic-tools dashboard -w --interval 1 --device home_station
+```
 
 ### JSON schema
 
