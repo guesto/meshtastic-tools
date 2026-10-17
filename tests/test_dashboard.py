@@ -23,6 +23,12 @@ from meshtastic_tools.core.device import DeviceManager
 from meshtastic_tools.dashboard.data import collect_dashboard_data, render_rich, render_text, timeline_symbols, to_json
 from tests.test_snapshot import info_text
 
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences from CLI output for stable assertions."""
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+
 dashboard = importlib.import_module("meshtastic_tools.dashboard.data")
 NOW = datetime(2026, 10, 16, 16, 45, 32, tzinfo=ZoneInfo("Asia/Yekaterinburg"))
 
@@ -327,13 +333,13 @@ def test_cli_uses_rich_in_a_terminal_and_honors_no_color(configured, monkeypatch
 def test_watch_with_json_is_rejected():
     result = CliRunner().invoke(app, ["dashboard", "--watch", "--json"])
     assert result.exit_code == 2, result.output
-    assert "--watch cannot be combined with --json" in result.output
+    assert "--watch cannot be combined with --json" in _strip_ansi(result.output)
 
 
 def test_watch_requires_terminal():
     result = CliRunner().invoke(app, ["dashboard", "--watch"])
     assert result.exit_code == 2, result.output
-    assert "--watch requires a terminal" in result.output
+    assert "--watch requires a terminal" in _strip_ansi(result.output)
 
 
 @pytest.fixture
@@ -405,7 +411,7 @@ def test_watch_displays_update_errors_and_recovers(configured, monkeypatch, watc
 def test_watch_interval_must_be_at_least_point_one(interval):
     result = CliRunner().invoke(app, ["dashboard", "--watch", "--interval", interval])
     assert result.exit_code == 2, result.output
-    assert "--interval" in result.output
+    assert "--interval" in _strip_ansi(result.output)
 
 
 @pytest.mark.parametrize("terminal", [False, True])
