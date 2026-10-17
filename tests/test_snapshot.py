@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from meshtastic_tools.logger.snapshot import parse_snapshot
+from meshtastic_tools.core.snapshot import parse_snapshot
 
 
 def info_text(metrics=None):

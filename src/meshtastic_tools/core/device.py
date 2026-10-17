@@ -15,7 +15,7 @@ from meshtastic_tools.core.logging_config import get_logger
 
 def _command_failure(result) -> str:
     # Import at call time: logger.__init__ also imports device management.
-    from meshtastic_tools.logger.privacy import redact_secrets
+    from meshtastic_tools.core.privacy import redact_secrets
 
     output = result.stderr.strip() or result.stdout.strip()
     details = redact_secrets(output)

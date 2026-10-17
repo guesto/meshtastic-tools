@@ -8,11 +8,11 @@ from decimal import Decimal, ROUND_HALF_UP, localcontext
 from rich.console import Console, Group
 from rich.text import Text
 
-from meshtastic_tools.logger.dashboard import (
+from meshtastic_tools.dashboard.data import (
     COLORS, STATUS_PRIORITY, _duration, _safe, _size,
     timeline_capacity, timeline_symbols, timeline_view,
 )
-from meshtastic_tools.logger.privacy import redact_secrets
+from meshtastic_tools.core.privacy import redact_secrets
 
 
 LEGEND = "█ snapshot  ░ missing  ! error  · empty"

@@ -8,7 +8,7 @@ from meshtastic_tools.core.device import DeviceManager
 from meshtastic_tools.core.exceptions import CollectionError
 from meshtastic_tools.core.logging_config import get_logger
 from meshtastic_tools.logger.storage import StorageManager
-from meshtastic_tools.logger.timeline import TimelineHistory
+from meshtastic_tools.core.timeline import TimelineHistory
 
 
 def _record_history(kind):

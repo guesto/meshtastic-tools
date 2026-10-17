@@ -14,7 +14,7 @@ from meshtastic_tools.core.exceptions import CollectionError
 from meshtastic_tools.logger.collector import MeshtasticCollector
 from meshtastic_tools.logger.scheduler import DeviceSchedule
 from meshtastic_tools.logger.storage import StorageManager
-from meshtastic_tools.logger.timeline import DEFAULT_LIMIT, TimelineEvent, TimelineHistory
+from meshtastic_tools.core.timeline import DEFAULT_LIMIT, TimelineEvent, TimelineHistory
 
 
 NOW = datetime(2026, 10, 17, 12, tzinfo=timezone.utc)
@@ -67,7 +67,7 @@ def test_failed_atomic_replace_preserves_previous_history(tmp_path, monkeypatch)
     history = TimelineHistory(tmp_path)
     history.append("snapshot", NOW)
     before = history.path.read_bytes()
-    monkeypatch.setattr("meshtastic_tools.logger.timeline.os.replace", Mock(side_effect=OSError))
+    monkeypatch.setattr("meshtastic_tools.core.timeline.os.replace", Mock(side_effect=OSError))
     history.append("error", NOW)
     assert history.path.read_bytes() == before
     assert not list(tmp_path.glob("*.tmp"))

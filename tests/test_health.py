@@ -4,9 +4,9 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from meshtastic_tools.core.exceptions import CollectionError, StorageError
-from meshtastic_tools.logger.health import DeviceHealth, device_status
+from meshtastic_tools.core.health import DeviceHealth, device_status
 
-health = importlib.import_module("meshtastic_tools.logger.health")
+health = importlib.import_module("meshtastic_tools.core.health")
 LOCAL = timezone(timedelta(hours=5))
 
 

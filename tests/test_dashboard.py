@@ -19,10 +19,10 @@ from typer.testing import CliRunner
 from meshtastic_tools.cli import app
 from meshtastic_tools.core.config import ConfigManager
 from meshtastic_tools.core.device import DeviceManager
-from meshtastic_tools.logger.dashboard import collect_dashboard_data, render_rich, render_text, timeline_symbols, to_json
+from meshtastic_tools.dashboard.data import collect_dashboard_data, render_rich, render_text, timeline_symbols, to_json
 from tests.test_snapshot import info_text
 
-dashboard = importlib.import_module("meshtastic_tools.logger.dashboard")
+dashboard = importlib.import_module("meshtastic_tools.dashboard.data")
 NOW = datetime(2026, 10, 16, 16, 45, 32, tzinfo=ZoneInfo("Asia/Yekaterinburg"))
 
 
@@ -243,7 +243,7 @@ def test_read_only_offline_with_existing_artifacts(configured, monkeypatch):
     directory = record(configured)
     checkpoint(directory)
     snapshot(configured)
-    from meshtastic_tools.logger.timeline import TimelineHistory
+    from meshtastic_tools.core.timeline import TimelineHistory
     TimelineHistory(directory / "info", 2).append("snapshot", NOW)
     paths = [p for p in directory.rglob("*") if p.is_file()]
     before = {p: (p.read_bytes(), p.stat().st_mode, p.stat().st_mtime_ns) for p in paths}
@@ -256,7 +256,7 @@ def test_read_only_offline_with_existing_artifacts(configured, monkeypatch):
     monkeypatch.setattr(Path, "write_text", forbidden)
     monkeypatch.setattr(Path, "unlink", forbidden)
     monkeypatch.setattr("subprocess.run", forbidden)
-    result = CliRunner().invoke(app, ["--config", str(configured.loaded_path), "logger", "dashboard", "--json"])
+    result = CliRunner().invoke(app, ["--config", str(configured.loaded_path), "dashboard", "--json"])
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["schema_version"] == 1
     forbidden.assert_not_called()
@@ -286,7 +286,7 @@ def test_text_and_rich_rendering_with_fake_data_preserve_json(configured, width)
 @pytest.mark.parametrize("args,code", [(["--window","bad"],2),(["--width","0"],2),
                                       (["--device","missing"],1),(["--no-color","--width","40"],0)])
 def test_cli_arguments(configured, args, code):
-    result = CliRunner().invoke(app, ["--config", str(configured.loaded_path), "logger", "dashboard", *args])
+    result = CliRunner().invoke(app, ["--config", str(configured.loaded_path), "dashboard", *args])
     assert result.exit_code == code, result.output
     if "--width" in args and code == 0:
         assert max(len(line) for line in result.output.splitlines()) <= int(args[args.index("--width") + 1])
@@ -299,7 +299,7 @@ def test_cli_json_is_width_independent_and_local_timezone_has_offset(configured)
     assert data.timezone == "local"
     runner = CliRunner()
     for width in (20, 110):
-        result = runner.invoke(app, ["--config", str(configured.loaded_path), "logger", "dashboard", "--json", "--width", str(width)])
+        result = runner.invoke(app, ["--config", str(configured.loaded_path), "dashboard", "--json", "--width", str(width)])
         assert result.exit_code == 0, result.output
         value = json.loads(result.output)
         assert value["schema_version"] == 1
@@ -312,7 +312,7 @@ def test_cli_uses_rich_in_a_terminal_and_honors_no_color(configured, monkeypatch
     def terminal_console(**kwargs):
         return Console(**kwargs, height=25, force_terminal=True)
     monkeypatch.setattr("rich.console.Console", terminal_console)
-    args = ["--config", str(configured.loaded_path), "logger", "dashboard", "--width", "110"]
+    args = ["--config", str(configured.loaded_path), "dashboard", "--width", "110"]
     if no_color:
         args.append("--no-color")
     result = CliRunner().invoke(app, args, color=True)
@@ -369,7 +369,7 @@ def many_devices(manager):
 
 
 def test_summary_pagination_sorting_and_hidden_devices_contribute_to_status(configured):
-    from meshtastic_tools.logger.dashboard_render import device_page
+    from meshtastic_tools.dashboard.render import device_page
     many_devices(configured)
     data = collect(configured, device="alpha")
     assert data.overall_status == "unreadable"
@@ -388,7 +388,7 @@ def test_summary_pagination_sorting_and_hidden_devices_contribute_to_status(conf
 
 
 def test_default_detail_is_first_enabled_device_on_requested_page(configured):
-    from meshtastic_tools.logger.dashboard_render import device_page
+    from meshtastic_tools.dashboard.render import device_page
     many_devices(configured)
     data = collect(configured)
     assert device_page(data, 1)[3]["name"] == "delta"
@@ -429,7 +429,7 @@ def test_adaptive_layout_has_one_frame_and_a_fixed_center_divider(configured, wi
     (24.999,True,"low"),(25,True,"medium"),(50,True,"medium"),(50.001,True,"high"),
     (1.999,False,"low"),(2,False,"medium"),(5,False,"medium"),(5.001,False,"high")])
 def test_radio_thresholds_do_not_change_health(value, channel, state):
-    from meshtastic_tools.logger.dashboard_render import radio_severity
+    from meshtastic_tools.dashboard.render import radio_severity
     assert radio_severity(value, channel) == state
 
 
@@ -516,7 +516,7 @@ def test_source_path_is_json_only_and_untrusted_strings_are_literal(configured):
     (["--layout","bad"],2),(["--device","alpha","--all"],2),
     (["--all"],0),(["--layout","split","--width","80"],0)])
 def test_new_cli_flags(configured, args, code):
-    result = CliRunner().invoke(app, ["--config", str(configured.loaded_path), "logger", "dashboard", *args])
+    result = CliRunner().invoke(app, ["--config", str(configured.loaded_path), "dashboard", *args])
     assert result.exit_code == code, result.output
     if args == ["--all"]:
         assert "COLLECTION" not in result.output
@@ -581,7 +581,7 @@ def test_timeline_brackets_fill_column_and_legend_is_separated(configured, width
     lines = rich_output(data, width=width).splitlines()
     index = next(i for i, line in enumerate(lines) if re.search(r'\[[█░?·]+\]', line))
     bar = re.search(r'\[([█░?·]+)\]', lines[index])
-    from meshtastic_tools.logger.dashboard import timeline_capacity
+    from meshtastic_tools.dashboard.data import timeline_capacity
     assert len(bar.group(1)) == timeline_capacity(width)
     assert "█ snapshot" in lines[index + 1]
     assert "! error" in lines[index + 1] and "· empty" in lines[index + 1]
@@ -590,7 +590,7 @@ def test_timeline_brackets_fill_column_and_legend_is_separated(configured, width
 
 
 def event_history(manager, kinds, name="alpha"):
-    from meshtastic_tools.logger.timeline import TimelineHistory, TimelineEvent
+    from meshtastic_tools.core.timeline import TimelineHistory, TimelineEvent
     storage = manager.get_logger_config().storage
     storage.max_files = None
     history = TimelineHistory(storage.data_dir / name / "info")
@@ -601,7 +601,7 @@ def event_history(manager, kinds, name="alpha"):
 
 @pytest.mark.parametrize("width", [80,120,160])
 def test_timeline_events_fill_available_cells_and_json_reports_same_truncation(configured, width):
-    from meshtastic_tools.logger.dashboard import timeline_capacity
+    from meshtastic_tools.dashboard.data import timeline_capacity
     directory = record(configured)
     checkpoint(directory)
     kinds = (["snapshot", "missing", "error"] * 70)[:200]

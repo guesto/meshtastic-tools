@@ -13,9 +13,9 @@ from typing import List, Optional
 from zoneinfo import ZoneInfo
 
 from meshtastic_tools.core.config import ConfigManager
-from meshtastic_tools.logger.health import HealthDocument, describe_device_status
-from meshtastic_tools.logger.snapshot import Snapshot, parse_snapshot, read_snapshot
-from meshtastic_tools.logger.timeline import EVENT_SYMBOLS, TimelineHistory
+from meshtastic_tools.core.health import HealthDocument, describe_device_status
+from meshtastic_tools.core.snapshot import Snapshot, parse_snapshot, read_snapshot
+from meshtastic_tools.core.timeline import EVENT_SYMBOLS, TimelineHistory
 
 
 STATUS_PRIORITY = ("disabled", "ok", "unknown", "stale", "error", "unreadable")
@@ -298,11 +298,11 @@ def timeline_symbols(timeline: dict, width: int) -> str:
 
 def render_text(data: DashboardData, width: int = 120, page: int = 1,
                 summary_only: bool = False, layout: str = "auto") -> str:
-    from meshtastic_tools.logger.dashboard_render import render_text as render
+    from meshtastic_tools.dashboard.render import render_text as render
     return render(data, width, page, summary_only, layout)
 
 
 def render_rich(data: DashboardData, width: int = 120, page: int = 1,
                 summary_only: bool = False, layout: str = "auto", height: Optional[int] = None):
-    from meshtastic_tools.logger.dashboard_render import render_rich as render
+    from meshtastic_tools.dashboard.render import render_rich as render
     return render(data, width, page, summary_only, layout, height)

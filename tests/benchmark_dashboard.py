@@ -59,7 +59,7 @@ def main():
             (directory.parent / ".status.json").write_text(json.dumps(record))
             (directory.parent / ".schedule.json").write_text(json.dumps(
                 {"schedule": "*/5 * * * *", "timezone": "local", "last_slot": now.timestamp()}))
-        command = [sys.executable, "-m", "meshtastic_tools.cli", "--config", str(path), "logger", "dashboard"]
+        command = [sys.executable, "-m", "meshtastic_tools.cli", "--config", str(path), "dashboard"]
         if args.output == "json":
             command.append("--json")
         durations = []

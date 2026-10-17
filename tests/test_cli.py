@@ -306,7 +306,7 @@ def test_effective_config_show_includes_sources_inherited_values_and_paths(confi
 
 def test_named_timezone_controls_run_status_and_schedule_next(configured, monkeypatch):
     from datetime import timezone
-    health = importlib.import_module("meshtastic_tools.logger.health")
+    health = importlib.import_module("meshtastic_tools.core.health")
 
     class Clock(datetime):
         @classmethod
@@ -342,7 +342,7 @@ def test_named_timezone_controls_run_status_and_schedule_next(configured, monkey
 
 def test_scheduled_history_records_gaps_before_error_and_preserves_retry(configured, monkeypatch):
     from datetime import timezone
-    from meshtastic_tools.logger.timeline import TimelineHistory
+    from meshtastic_tools.core.timeline import TimelineHistory
 
     class Clock(datetime):
         current = datetime(2026, 10, 17, 10, 0, 30).astimezone()
@@ -352,7 +352,7 @@ def test_scheduled_history_records_gaps_before_error_and_preserves_retry(configu
             return cls.current.astimezone(tz) if tz is not None else cls.current.replace(tzinfo=None)
 
     collector_module = importlib.import_module("meshtastic_tools.logger.collector")
-    health_module = importlib.import_module("meshtastic_tools.logger.health")
+    health_module = importlib.import_module("meshtastic_tools.core.health")
     monkeypatch.setattr(logger_cli, "datetime", Clock)
     monkeypatch.setattr(collector_module, "datetime", Clock)
     monkeypatch.setattr(health_module, "utc_now", lambda: Clock.current.astimezone(timezone.utc))

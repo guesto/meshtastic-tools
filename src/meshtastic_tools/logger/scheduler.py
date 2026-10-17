@@ -11,7 +11,8 @@ from pathlib import Path
 from croniter import croniter
 
 from meshtastic_tools.core.exceptions import CollectionError
-from meshtastic_tools.logger.timeline import TimelineEvent, TimelineHistory
+from meshtastic_tools.core.health import latest_slot
+from meshtastic_tools.core.timeline import TimelineEvent, TimelineHistory
 
 
 class DeviceSchedule:
@@ -36,10 +37,7 @@ class DeviceSchedule:
 
     @staticmethod
     def latest_slot(schedule: str, now: datetime) -> float:
-        # get_prev is exclusive: include a slot that falls exactly at now.
-        base = datetime.fromtimestamp(now.timestamp() + 0.000001, now.tzinfo)
-        slot = croniter(schedule, base).get_prev(datetime)
-        return slot.timestamp()
+        return latest_slot(schedule, now)
 
     def is_due(self, schedule: str, now: datetime, timezone_name: str = "local") -> bool:
         slot = self.latest_slot(schedule, now)

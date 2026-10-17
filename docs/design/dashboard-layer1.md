@@ -5,7 +5,7 @@ Approved — ready for implementation.
 
 ## Goal
 
-Add the command `meshtastic-tools logger dashboard` that displays the
+Add the command `meshtastic-tools dashboard` that displays the
 current state of the logger in pseudo-graphic form — in a "cockpit
 instrument" style: dense layout, aligned columns, compact timeline,
 and minimal color. The command works **without contacting the device**
@@ -19,7 +19,7 @@ layout of Layer 1.
 
 The project already provides:
 
-- `logger/health.py` — stores the last collection result per device in
+- `core/health.py` — stores the last collection result per device in
   `.status.json` (atomic writes, `0700` permissions, credential
   redaction).
 - `logger/scheduler.py` — knows the last and next cron slot, keeps
@@ -36,7 +36,7 @@ makes the timeline meaningful.
 
 In scope:
 
-- Command `logger dashboard` with static output (one snapshot of state).
+- Command `dashboard` with static output (one snapshot of state).
 - Two-column layout: left — logger, right — node.
 - Top bar with the tool title, timezone, and device summary.
 - Pseudo-graphic panel with sections: timeline, collection, storage,
@@ -460,7 +460,7 @@ Timeline history corruption (`.timeline.json`) is not treated as
 ### CLI
 
 ```
-logger dashboard
+dashboard
   [--device NAME]
   [--page N]
   [--json]
@@ -585,34 +585,46 @@ JSON rules:
 
 ## Architecture
 
-New modules:
+The root CLI registers two independent tools: `logger` for collection and
+`dashboard` for read-only visualization. Both use shared modules in `core`.
 
-- `logger/timeline.py`:
-  - `TimelineEvent` — dataclass with `type` and `at`.
-  - `TimelineHistory` — path, `load()`, `save()`, `append()`,
-    `read_last(n)`, `prune(limit)`.
-- `logger/snapshot.py`:
-  - `Snapshot` — dataclass with parsed metrics.
-  - `parse_snapshot(text) -> Snapshot` — pure function.
-  - `read_snapshot(path) -> str` — I/O with `FileNotFoundError`
-    handling.
-- `logger/dashboard.py`:
-  - `DashboardData`, `collect_dashboard_data()`, `render_rich()`,
-    `render_text()`, `to_json()`.
+Shared modules:
 
-Changed modules:
+- `core/config.py`, `core/device.py`, `core/exceptions.py`,
+  `core/logging_config.py` — configuration, device access, errors, and logging.
+- `core/health.py` — collection records, shared health/freshness rules,
+  and cron-slot calculation used by the logger scheduler.
+- `core/privacy.py` — credential redaction.
+- `core/timeline.py` — `TimelineEvent` and bounded `TimelineHistory`
+  persistence for collection events.
+- `core/snapshot.py` — `Snapshot`, pure `parse_snapshot(text)`, and
+  `read_snapshot(path)` for saved device metrics.
 
-- `logger/collector.py` — append `snapshot` / `error` events.
-- `logger/scheduler.py` — append `missing` events for missed slots.
-- `logger/cli.py` — add the `dashboard` command.
+Collection tool:
+
+- `logger/cli.py` — collection, status, storage, schedule, and service commands.
+- `logger/collector.py` — collect snapshots and append `snapshot` / `error` events.
+- `logger/scheduler.py` — locks, checkpoints, and `missing` events for missed slots.
+- `logger/storage.py`, `logger/services.py` — storage management and systemd units.
+
+Visualization tool:
+
+- `dashboard/__init__.py` — package marker.
+- `dashboard/cli.py` — `dashboard_app`, invoked as `meshtastic-tools dashboard`.
+- `dashboard/data.py` — `DashboardData`, read-only `collect_dashboard_data()`,
+  `to_json()`, timeline helpers, and rendering entry points.
+- `dashboard/render.py` — Rich and plain-text layouts, device pagination,
+  and radio indicators.
+- `cli.py` — registers `logger_app` and `dashboard_app` at the root level.
 
 Principles:
 
-- Dashboard has no side effects on disk.
+- Dashboard has no side effects on disk and imports shared readers from `core`.
+- Neither `core` nor `dashboard` depends on the `logger` package.
 - All reads via `pathlib`, with `FileNotFoundError` handling (a file
   may be removed by rotation between listing and opening).
-- Statuses and freshness come from the shared `logger status` logic;
-  do not duplicate it.
+- Statuses and freshness come from the shared `core.health` logic used
+  by `logger status`; do not duplicate it.
 - Snapshot parser is a pure function, testable without a filesystem.
 - Timeline history is append-only and bounded by `max_files`.
 
@@ -713,7 +725,7 @@ In plain-text mode:
 
 ## Acceptance Criteria
 
-1. `logger dashboard` runs on a Linux server without a GUI.
+1. `dashboard` runs on a Linux server without a GUI.
 2. `dashboard` does not contact the device and does not create or
    modify files.
 3. Handles missing `.status.json`, `.schedule.json`, `.timeline.json`,
