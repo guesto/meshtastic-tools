@@ -1,12 +1,31 @@
 """Data collector for Meshtastic devices."""
 
-from datetime import datetime
+from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
 
 from meshtastic_tools.core.device import DeviceManager
 from meshtastic_tools.core.exceptions import CollectionError
 from meshtastic_tools.core.logging_config import get_logger
 from meshtastic_tools.logger.storage import StorageManager
+from meshtastic_tools.logger.timeline import TimelineHistory
+
+
+def _record_history(kind):
+    def decorate(method):
+        @wraps(method)
+        def collect(self, *args, **kwargs):
+            directory = self.storage.device_path.parent / kind
+            history = TimelineHistory(directory, self.storage.config.max_files)
+            try:
+                path = method(self, *args, **kwargs)
+            except CollectionError:
+                history.append("error", datetime.now(timezone.utc))
+                raise
+            history.append("snapshot", datetime.now(timezone.utc))
+            return path
+        return collect
+    return decorate
 
 
 class MeshtasticCollector:
@@ -24,6 +43,7 @@ class MeshtasticCollector:
         self.storage = storage_manager
         self.logger = get_logger(__name__)
     
+    @_record_history("info")
     def collect_info(self) -> Path:
         """
         Collect --info data from device and save to storage.
@@ -57,6 +77,7 @@ class MeshtasticCollector:
         except Exception as e:
             raise CollectionError(f"Failed to collect info from {self.device.name}: {e}") from e
     
+    @_record_history("telemetry")
     def collect_telemetry(self) -> Path:
         """
         Collect --request-telemetry data from device.
@@ -93,6 +114,7 @@ class MeshtasticCollector:
         except Exception as e:
             raise CollectionError(f"Failed to collect telemetry from {self.device.name}: {e}") from e
     
+    @_record_history("nodes")
     def collect_nodes(self) -> Path:
         """
         Collect --nodes data from device.
@@ -123,6 +145,7 @@ class MeshtasticCollector:
         except Exception as e:
             raise CollectionError(f"Failed to collect nodes from {self.device.name}: {e}") from e
 
+    @_record_history("position")
     def collect_position(self) -> Path:
         """Request the connected node's position and store the response."""
         try:

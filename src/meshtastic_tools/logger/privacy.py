@@ -4,7 +4,7 @@ import re
 
 
 _SECRET = re.compile(
-    r'("(?:private[_-]?key|psk|password|fixed[_-]?pin|session[_-]?passkey)"\s*:\s*)'
+    r'("(?:private[_-]?key|(?:wifi[_-]?)?psk|password|fixed[_-]?pin|session[_-]?passkey)"\s*:\s*)'
     r'("(?:\\.|[^"\\])*"|-?\d+|\[[^\]]*\])',
     re.IGNORECASE,
 )

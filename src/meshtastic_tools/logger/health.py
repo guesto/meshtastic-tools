@@ -136,6 +136,15 @@ def device_status(name: str, directory: Path, enabled: bool, schedule: Optional[
                   timezone_name: str = "local") -> dict:
     """Describe the scheduled info collector; manual telemetry cannot mask its failures."""
     result = DeviceHealth(directory).load().collectors.get("info")
+    return describe_device_status(name, result, enabled, schedule, timeout, now,
+                                  grace_seconds, timezone_name)
+
+
+def describe_device_status(name: str, result: Optional[CollectionResult], enabled: bool,
+                           schedule: Optional[str], timeout: int, now: datetime,
+                           grace_seconds: Optional[int] = None,
+                           timezone_name: str = "local") -> dict:
+    """Shared health/freshness rules for already loaded records (no I/O)."""
     if timezone_name != "local":
         now = now.astimezone(ZoneInfo(timezone_name))
     next_scheduled = croniter(schedule, now).get_next(datetime) if enabled and schedule else None

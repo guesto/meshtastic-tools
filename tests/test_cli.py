@@ -338,3 +338,39 @@ def test_named_timezone_controls_run_status_and_schedule_next(configured, monkey
     assert next_run.exit_code == 0, next_run.output
     assert "Asia/Yekaterinburg" in next_run.output
     assert report["next_scheduled_at"] in next_run.output
+
+
+def test_scheduled_history_records_gaps_before_error_and_preserves_retry(configured, monkeypatch):
+    from datetime import timezone
+    from meshtastic_tools.logger.timeline import TimelineHistory
+
+    class Clock(datetime):
+        current = datetime(2026, 10, 17, 10, 0, 30).astimezone()
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current.astimezone(tz) if tz is not None else cls.current.replace(tzinfo=None)
+
+    collector_module = importlib.import_module("meshtastic_tools.logger.collector")
+    health_module = importlib.import_module("meshtastic_tools.logger.health")
+    monkeypatch.setattr(logger_cli, "datetime", Clock)
+    monkeypatch.setattr(collector_module, "datetime", Clock)
+    monkeypatch.setattr(health_module, "utc_now", lambda: Clock.current.astimezone(timezone.utc))
+    execute = Mock(return_value=SimpleNamespace(stdout=INFO))
+    monkeypatch.setattr(DeviceManager, "execute_command", execute)
+    args = ["logger", "run", "--device", "alpha"]
+    assert runner.invoke(app, args).exit_code == 0
+    history = TimelineHistory(configured[0].parent / "data" / "alpha" / "info")
+    assert [e.type for e in history.load()] == ["snapshot"]
+    Clock.current = Clock.current.replace(minute=16)
+    execute.side_effect = ConnectionError("offline")
+    result = runner.invoke(app, args)
+    assert result.exit_code == 1, result.output
+    assert [e.type for e in history.load()] == ["snapshot", "missing", "missing", "error"]
+    assert [e.at.astimezone().minute for e in history.load()][1:3] == [5, 10]
+    Clock.current = Clock.current.replace(minute=17)
+    execute.side_effect = None
+    assert runner.invoke(app, args).exit_code == 0
+    assert [e.type for e in history.load()] == ["snapshot", "missing", "missing", "error", "snapshot"]
+    assert runner.invoke(app, args).exit_code == 0
+    assert len(history.load()) == 5

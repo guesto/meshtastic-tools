@@ -14,6 +14,7 @@ from meshtastic_tools.core.logging_config import get_logger
 from meshtastic_tools.logger.collector import MeshtasticCollector
 from meshtastic_tools.logger.storage import GlobalStorageManager
 from meshtastic_tools.logger.scheduler import DeviceSchedule
+from meshtastic_tools.logger.timeline import TimelineHistory
 from meshtastic_tools.logger.health import DeviceHealth, device_status
 from meshtastic_tools.logger.services import render_service, render_timer
 
@@ -169,8 +170,13 @@ def run(
                 schedule = logger_config.get_device_schedule(device_name)
                 if not force and not state.is_due(schedule, now, logger_config.timezone):
                     continue
+                health = DeviceHealth(device_storage.device_path.parent)
+                previous = health.load().collectors.get("info")
+                state.record_missed(schedule, now, TimelineHistory(device_storage.device_path, logger_config.storage.max_files),
+                                    logger_config.timezone,
+                                    previous.last_attempt_at if previous and previous.source == "scheduled" else None)
                 collector = MeshtasticCollector(registry.get_manager(device_name), device_storage)
-                with DeviceHealth(device_storage.device_path.parent).attempt("info", "scheduled") as attempt:
+                with health.attempt("info", "scheduled") as attempt:
                     filepath = collector.collect_info()
                     attempt.collected(filepath)
                     state.mark_completed(schedule, state.latest_slot(schedule, now), logger_config.timezone)
@@ -258,6 +264,50 @@ def status(
     unhealthy = any(report["enabled"] and report["state"] != "ok" for report in reports)
     if unreadable or (check and (unhealthy or not reports)):
         raise typer.Exit(code=1)
+
+
+@logger_app.command("dashboard")
+def dashboard(
+    device: Optional[str] = typer.Option(None, "--device", "-d", help="Show one device, including disabled devices"),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
+    no_color: bool = typer.Option(False, "--no-color", help="Disable colors"),
+    width: Optional[int] = typer.Option(None, "--width", min=1, help="Override terminal width"),
+    page: int = typer.Option(1, "--page", min=1, help="Device summary page (three devices per page)"),
+    all_devices: bool = typer.Option(False, "--all", help="Show only the device summary"),
+    layout: str = typer.Option("auto", "--layout", help="Layout: auto, single or split"),
+):
+    """Show the logger dashboard from local files, without contacting devices."""
+    import json
+    from rich.console import Console
+    from meshtastic_tools.logger.dashboard import (
+        collect_dashboard_data, render_rich, render_text, to_json,
+    )
+
+    if layout not in ("auto", "single", "split"):
+        raise typer.BadParameter("Choose auto, single or split", param_hint="--layout")
+    if device and all_devices:
+        raise typer.BadParameter("Choose either --device or --all")
+    manager = _get_config()
+    _get_logger_config(manager)
+    try:
+        data = collect_dashboard_data(manager, device=device)
+    except ValueError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(code=1)
+    from meshtastic_tools.logger.dashboard_render import device_page
+    try:
+        device_page(data, page)
+    except ValueError as e:
+        raise typer.BadParameter(str(e), param_hint="--page")
+    if json_output:
+        typer.echo(json.dumps(to_json(data, width=width or 120, layout=layout), ensure_ascii=False, indent=2, allow_nan=False))
+        return
+    console = Console(width=width, no_color=no_color, highlight=False)
+    render_width = width if width is not None else console.width
+    if not console.is_terminal or console.is_dumb_terminal or render_width < 80:
+        typer.echo(render_text(data, render_width, page, all_devices, layout))
+    else:
+        console.print(render_rich(data, render_width, page, all_devices, layout, height=console.height))
 
 
 @storage_app.command("list")

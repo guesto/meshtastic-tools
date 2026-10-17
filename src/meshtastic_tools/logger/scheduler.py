@@ -11,6 +11,7 @@ from pathlib import Path
 from croniter import croniter
 
 from meshtastic_tools.core.exceptions import CollectionError
+from meshtastic_tools.logger.timeline import TimelineEvent, TimelineHistory
 
 
 class DeviceSchedule:
@@ -59,6 +60,42 @@ class DeviceSchedule:
             return True
         self.mark_completed(schedule, slot, timezone_name)
         return False
+
+    def record_missed(self, schedule: str, now: datetime, history: TimelineHistory,
+                      timezone_name: str = "local", last_attempt_at=None) -> None:
+        """Record unattempted slots before the current slot, bounded by retention.
+
+        Keep the successful checkpoint unchanged so a failed collection can retry.
+        The previous attempt and existing events prevent retries from becoming gaps.
+        A new installation or changed schedule has no trustworthy earlier baseline.
+        """
+        if not history.limit:
+            return
+        try:
+            state = json.loads(self.path.read_text(encoding="utf-8"))
+            if state["schedule"] != schedule or state["timezone"] != timezone_name:
+                return
+            baseline = float(state["last_slot"])
+        except (OSError, ValueError, TypeError, KeyError):
+            return
+        current = self.latest_slot(schedule, now)
+        if last_attempt_at is not None:
+            attempt_slot = self.latest_slot(schedule, last_attempt_at.astimezone(now.tzinfo))
+            if attempt_slot <= current:
+                baseline = max(baseline, attempt_slot)
+        for event in history.load():
+            stamp = event.at.timestamp()
+            if stamp < current and (event.type == "missing" or last_attempt_at is None):
+                baseline = max(baseline, stamp if event.type == "missing" else
+                               self.latest_slot(schedule, event.at.astimezone(now.tzinfo)))
+        cursor = croniter(schedule, datetime.fromtimestamp(current, now.tzinfo))
+        missing = []
+        for _ in range(history.limit):
+            slot = cursor.get_prev(datetime)
+            if slot.timestamp() <= baseline:
+                break
+            missing.append(TimelineEvent("missing", slot.astimezone()))
+        history.extend(reversed(missing))
 
     def mark_completed(self, schedule: str, slot: float, timezone_name: str = "local") -> None:
         temp_path = None

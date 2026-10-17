@@ -71,7 +71,7 @@ class PydanticStorageConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     data_dir: Path
     retention_days: Optional[int] = Field(default=None, ge=1)
-    max_files: Optional[int] = Field(default=None, ge=1)
+    max_files: Optional[int] = Field(default=None, ge=0)
     filename_format: str = "info_{device}_{timestamp}.txt"
 
     @field_validator("filename_format")

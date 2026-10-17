@@ -223,8 +223,9 @@ Rules:
 - When more than three devices exist, show `1/N` next to `DEVICES (N)`
   and paginate via `--page N`. Statuses of hidden devices still
   contribute to the aggregate status.
-- When only one device exists, hide the summary entirely and use the
-  full width for the detail view.
+- Always show the device count and summary in the upper-right area,
+  including when only one device exists. Show at most three entries
+  per page and mark the selected device with `▸`.
 
 ## Left column (LOGGER)
 
