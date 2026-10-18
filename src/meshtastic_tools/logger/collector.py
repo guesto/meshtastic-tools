@@ -7,6 +7,8 @@ from pathlib import Path
 from meshtastic_tools.core.device import DeviceManager
 from meshtastic_tools.core.exceptions import CollectionError
 from meshtastic_tools.core.logging_config import get_logger
+from meshtastic_tools.core.metrics import MetricHistory
+from meshtastic_tools.core.snapshot import parse_snapshot
 from meshtastic_tools.logger.storage import StorageManager
 from meshtastic_tools.core.timeline import TimelineHistory
 
@@ -42,6 +44,16 @@ class MeshtasticCollector:
         self.device = device_manager
         self.storage = storage_manager
         self.logger = get_logger(__name__)
+
+    def _record_metrics(self, text: str) -> None:
+        """Metric caching is auxiliary and must not fail a successful collection."""
+        try:
+            snapshot = parse_snapshot(text)
+            MetricHistory(self.storage.device_path.parent).append(
+                datetime.now(timezone.utc), snapshot.battery_level, snapshot.voltage,
+            )
+        except Exception as e:
+            self.logger.warning(f"Failed to record metrics: {e}")
     
     @_record_history("info")
     def collect_info(self) -> Path:
@@ -65,6 +77,7 @@ class MeshtasticCollector:
             
             # Save the output
             filepath = self.storage.save(result.stdout, filename)
+            self._record_metrics(result.stdout)
             
             self.logger.info(
                 f"Info collected from {self.device.name}",
@@ -152,6 +165,7 @@ class MeshtasticCollector:
             info = self.device.get_info()
             result = self.device.execute_command(["--request-position", "--dest", info.node_id])
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")
-            return self.storage.save(result.stdout, f"position_{self.device.name}_{timestamp}.txt")
+            filepath = self.storage.save(result.stdout, f"position_{self.device.name}_{timestamp}.txt")
+            return filepath
         except Exception as e:
             raise CollectionError(f"Failed to collect position from {self.device.name}: {e}") from e

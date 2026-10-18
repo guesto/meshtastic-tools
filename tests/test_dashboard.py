@@ -20,6 +20,7 @@ from typer.testing import CliRunner
 from meshtastic_tools.cli import app
 from meshtastic_tools.core.config import ConfigManager
 from meshtastic_tools.core.device import DeviceManager
+from meshtastic_tools.core.metrics import MetricHistory
 from meshtastic_tools.dashboard.data import collect_dashboard_data, render_rich, render_text, timeline_symbols, to_json
 from tests.test_snapshot import info_text
 
@@ -98,7 +99,41 @@ def test_empty_storage_is_unknown_read_only_and_has_null_missing_fields(configur
     assert row["schedule"]["next_slot_at"] is None
     assert row["storage"]["file_count"] == 0
     assert row["timeline"] == {"events": [], "shown": 0, "total": 0, "next_slot_at": None}
+    assert row["power"] == {"battery_level": None, "voltage": None, "battery_min": None,
+                            "battery_max": None, "voltage_min": None, "voltage_max": None, "samples": []}
     assert not configured.get_logger_config().storage.data_dir.exists()
+
+
+def test_power_uses_snapshot_and_history_with_localized_timestamps(configured):
+    path = snapshot(configured, content=info_text({"batteryLevel": 60, "voltage": 3.8}))
+    history = MetricHistory(path.parent.parent)
+    history.append(NOW - timedelta(hours=2), 0, None)
+    history.append(NOW - timedelta(hours=1), None, 0)
+    history.append(NOW, 80, 4.1)
+    before = history.path.read_bytes()
+    data = collect(configured)
+    power = data.devices[0]["power"]
+    assert power == {
+        "battery_level": 60, "voltage": 3.8, "battery_min": 0, "battery_max": 80,
+        "voltage_min": 0, "voltage_max": 4.1,
+        "samples": [{"at": (NOW - timedelta(hours=hours)).isoformat(),
+                     "battery_level": battery, "voltage": voltage}
+                    for hours, battery, voltage in ((2, 0, None), (1, None, 0), (0, 80, 4.1))],
+    }
+    assert to_json(data)["devices"][0]["power"] == power
+    assert history.path.read_bytes() == before
+
+
+def test_corrupt_metrics_do_not_affect_current_power_or_health(configured):
+    directory = record(configured)
+    snapshot(configured, content=info_text({"batteryLevel": 60, "voltage": 3.8}))
+    path = directory / ".metrics.json"
+    path.write_text("broken")
+    row = collect(configured).devices[0]
+    assert row["status"] == "ok"
+    assert row["power"] == {"battery_level": 60, "voltage": 3.8, "battery_min": None,
+                            "battery_max": None, "voltage_min": None, "voltage_max": None, "samples": []}
+    assert path.read_text() == "broken"
 
 
 @pytest.mark.parametrize("state", ["ok", "stale", "error"])

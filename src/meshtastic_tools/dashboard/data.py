@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from meshtastic_tools.core.config import ConfigManager
 from meshtastic_tools.core.health import HealthDocument, describe_device_status
+from meshtastic_tools.core.metrics import MetricHistory
 from meshtastic_tools.core.snapshot import Snapshot, parse_snapshot, read_snapshot
 from meshtastic_tools.core.timeline import EVENT_SYMBOLS, TimelineHistory
 
@@ -222,6 +223,17 @@ def collect_dashboard_data(manager: ConfigManager, device: Optional[str] = None,
             except (OSError, UnicodeError):
                 snapshot = Snapshot(snapshot_status="unreadable", snapshot_error="Cannot read latest snapshot")
         connection = manager.devices[name].connection
+        metrics = MetricHistory(directory).load()
+        power = {
+            "battery_level": snapshot.battery_level,
+            "voltage": snapshot.voltage,
+            "battery_min": min((s.battery_level for s in metrics if s.battery_level is not None), default=None),
+            "battery_max": max((s.battery_level for s in metrics if s.battery_level is not None), default=None),
+            "voltage_min": min((s.voltage for s in metrics if s.voltage is not None), default=None),
+            "voltage_max": max((s.voltage for s in metrics if s.voltage is not None), default=None),
+            "samples": [{"at": _iso(s.at.timestamp(), tz),
+                         "battery_level": s.battery_level, "voltage": s.voltage} for s in metrics],
+        }
         mesh = asdict(snapshot)
         if snapshot.last_heard_at is not None:
             mesh["last_heard_at"] = _iso(snapshot.last_heard_at.timestamp(), tz)
@@ -231,7 +243,7 @@ def collect_dashboard_data(manager: ConfigManager, device: Optional[str] = None,
                         "collection": collection,
                         "schedule": {"expression": report["schedule"], "last_slot_at": last_slot,
                                      "next_slot_at": next_slot},
-                        "timeline": timeline, "storage": storage, "mesh": mesh})
+                        "timeline": timeline, "storage": storage, "mesh": mesh, "power": power})
     overall = max((row["status"] for row in summaries), key=STATUS_PRIORITY.index, default="disabled")
     return DashboardData(now, config.timezone, overall, reports,
                          str(manager.loaded_path) if manager.loaded_path else None, summaries, device)
