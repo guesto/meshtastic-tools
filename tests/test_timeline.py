@@ -39,6 +39,31 @@ def test_missing_or_corrupt_history_reads_empty_and_restarts(tmp_path, content):
     assert not list(tmp_path.glob("*.tmp"))
 
 
+def test_mixed_timezones_load_in_utc_time_order_and_migrate_on_save(tmp_path):
+    history = TimelineHistory(tmp_path)
+    history.path.write_text(json.dumps({"version": 1, "events": [
+        {"type": "snapshot", "at": "2026-10-17T10:10:00+00:00"},
+        {"type": "missing", "at": "2026-10-17T10:15:00+05:00"},
+        {"type": "error", "at": "2026-10-17T05:05:00+00:00"},
+        {"type": "snapshot", "at": "2026-10-17T10:10:00+05:00"},
+    ]}))
+    before = history.path.read_bytes()
+    events = history.load()
+    assert all(event.at.utcoffset() == timedelta(0) for event in events)
+    assert [event.at for event in events] == [
+        datetime(2026, 10, 17, hour, minute, tzinfo=timezone.utc)
+        for hour, minute in ((5, 5), (5, 10), (5, 15), (10, 10))
+    ]
+    assert history.read_last(2) == events[-2:]
+    assert TimelineHistory(tmp_path, 2).load() == events[-2:]
+    assert history.path.read_bytes() == before
+
+    history.save(events)
+    saved = json.loads(history.path.read_text())["events"]
+    assert [row["at"] for row in saved] == [event.at.isoformat() for event in events]
+    assert all(row["at"].endswith("+00:00") for row in saved)
+
+
 def test_retention_keeps_last_events_without_mutating_on_read(tmp_path):
     history = TimelineHistory(tmp_path, 3)
     history.extend(TimelineEvent(kind, NOW + timedelta(seconds=i))
@@ -158,4 +183,7 @@ def test_long_attempt_does_not_hide_slot_crossed_during_collection(tmp_path):
     # Attempt at 11:59 for 11:55 finishes at 12:01; the 12:00 slot was not attempted.
     history.append("snapshot", NOW + timedelta(minutes=1))
     state.record_missed("*/5 * * * *", NOW + timedelta(minutes=5), history, "UTC", NOW - timedelta(minutes=1))
-    assert history.load()[-1] == TimelineEvent("missing", NOW)
+    assert history.load() == [
+        TimelineEvent("missing", NOW),
+        TimelineEvent("snapshot", NOW + timedelta(minutes=1)),
+    ]

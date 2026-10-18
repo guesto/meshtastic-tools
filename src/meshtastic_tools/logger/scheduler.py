@@ -5,7 +5,7 @@ import json
 import os
 import tempfile
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from croniter import croniter
@@ -92,7 +92,7 @@ class DeviceSchedule:
             slot = cursor.get_prev(datetime)
             if slot.timestamp() <= baseline:
                 break
-            missing.append(TimelineEvent("missing", slot.astimezone()))
+            missing.append(TimelineEvent("missing", slot.astimezone(timezone.utc)))
         history.extend(reversed(missing))
 
     def mark_completed(self, schedule: str, slot: float, timezone_name: str = "local") -> None:

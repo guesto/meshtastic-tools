@@ -4,7 +4,7 @@ import json
 import os
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -46,7 +46,11 @@ class TimelineHistory:
             for row in value["events"]:
                 if not isinstance(row, dict) or set(row) != {"type", "at"} or not isinstance(row["at"], str):
                     return []
-                events.append(TimelineEvent(row["type"], datetime.fromisoformat(row["at"].replace("Z", "+00:00"))))
+                at = datetime.fromisoformat(row["at"].replace("Z", "+00:00"))
+                if at.utcoffset() is None:
+                    return []
+                events.append(TimelineEvent(row["type"], at.astimezone(timezone.utc)))
+            events.sort(key=lambda event: event.at.timestamp())
             return events[-self.limit:]
         except (OSError, ValueError, TypeError, KeyError):
             return []
