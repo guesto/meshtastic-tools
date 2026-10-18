@@ -2,8 +2,9 @@
 
 import math
 import textwrap
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP, localcontext
+from typing import Optional
 
 from rich.console import Console, Group
 from rich.text import Text
@@ -79,6 +80,30 @@ def _bar(percent, width):
     width = max(1, width)
     filled = min(width, max(0, round(percent / 100 * width)))
     return "[" + "█" * filled + "░" * (width - filled) + "]"
+
+
+def _sparkline(samples: list[dict], width: int = 48, *, now: Optional[datetime] = None) -> str:
+    """Average battery per rolling 30-minute interval in the 24h ending at now."""
+    width = max(0, width)
+    if not samples or not width:
+        return " " * width
+    end = (now or datetime.now(timezone.utc)).timestamp()
+    start = end - 24 * 60 * 60
+    buckets = {}
+    for sample in samples:
+        battery = sample["battery_level"]
+        if battery is None:
+            continue
+        stamp = datetime.fromisoformat(sample["at"].replace("Z", "+00:00")).timestamp()
+        if not start <= stamp <= end:
+            continue
+        index = min(47, int((stamp - start) // (30 * 60)))
+        total, count = buckets.get(index, (0, 0))
+        buckets[index] = (total + battery, count + 1)
+    levels = "▁▂▃▄▅▆▇█"
+    points = "".join(levels[min(7, max(0, int(total / count * 8 / 100)))]
+                     for _, (total, count) in sorted(buckets.items()))
+    return points[-width:].ljust(width)
 
 
 def _clip(value, width):
@@ -240,11 +265,17 @@ def _node_column(device, now, width, omitted, bar_width):
             col.row("POSITION", value)
         else:
             col.row("POSITION", None)
-    battery = mesh["battery_level"]
-    battery_label = _float(battery, " %", trim=True)
-    col.row("BATTERY", battery_label + " · " + _float(mesh["voltage"], " V"))
+    col.section("POWER")
+    power = device["power"]
+    battery, voltage = power["battery_level"], power["voltage"]
+    col.row("BATTERY", _float(battery, " %", trim=True) + " · " + _float(voltage, " V"))
     if battery is not None:
-        col.row("", _bar(battery, min(bar_width, max(1, col.value_width - 2))))
+        col.row("", _bar(battery, 50))
+    col.row("", "[ " + _sparkline(power["samples"], 48, now=now) + " ]")
+    col.row("", "min " + _float(power["battery_min"], "%", trim=True)
+            + " · max " + _float(power["battery_max"], "%", trim=True))
+    col.row("VOLTAGE", _float(voltage, " V") + "  (min " + _float(power["voltage_min"], " V")
+            + " · max " + _float(power["voltage_max"], " V") + ")")
     col.section("RADIO")
     number_width = max(len(_float(mesh[key])) for key in ("channel_utilization", "air_util_tx"))
     col.row("CHANNEL", _radio(mesh["channel_utilization"], True, number_width))

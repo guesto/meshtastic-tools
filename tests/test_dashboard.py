@@ -680,12 +680,105 @@ def test_new_cli_flags(configured, args, code):
         assert "DEVICES (2)" in result.output
 
 
-@pytest.mark.parametrize("width,bar_width", [(80,16),(100,20),(120,20),(140,40)])
-def test_progress_bar_width_follows_the_outer_terminal_width(configured, width, bar_width):
+@pytest.mark.parametrize("width,bar_width", [(80,16),(100,20),(120,20),(140,34)])
+def test_storage_bar_width_follows_the_outer_terminal_width(configured, width, bar_width):
     data = collect(configured, device="alpha")
-    data.devices[0]["mesh"]["battery_level"] = 100
+    storage = data.devices[0]["storage"]
+    storage["file_count"] = storage["max_files"]
     text = rich_output(data, width=width)
     assert "[" + "█" * bar_width + "]" in text
+
+
+def power_samples():
+    start = NOW - timedelta(hours=24)
+    return [{"at": (start + timedelta(minutes=30 * i + 15)).isoformat(),
+             "battery_level": (i % 8) * 12.5, "voltage": None} for i in range(48)]
+
+
+@pytest.mark.parametrize("renderer", ["rich", "text"])
+def test_power_block_shows_battery_bar_sparkline_and_minmax(configured, renderer):
+    data = collect(configured, device="alpha")
+    data.devices[0]["power"] = {
+        "battery_level": 27, "voltage": 3.5, "battery_min": 12, "battery_max": 100,
+        "voltage_min": 3.21, "voltage_max": 4.18, "samples": power_samples(),
+    }
+    original = deepcopy(to_json(data))
+    output = rich_output(data, width=160) if renderer == "rich" else render_text(data, width=160)
+    assert output.index("DEVICE") < output.index("POWER") < output.index("RADIO\n" if renderer == "text" else "RADIO ")
+    assert "27 % · 3.50 V" in output
+    assert "min 12% · max 100%" in output
+    assert "3.50 V  (min 3.21 V · max 4.18 V)" in output
+    progress = re.search(r"\[([█░]{50})\]", output)
+    sparkline = re.search(r"\[ ([▁▂▃▄▅▆▇█]{48}) \]", output)
+    assert progress and sparkline
+    assert len(progress.group(0)) == len(sparkline.group(0)) == 52
+    assert sparkline.group(1) == "▁▂▃▄▅▆▇█" * 6
+    assert "[" + "·" * 50 + "]" in output
+    assert to_json(data) == original
+    assert "sparkline" not in to_json(data)["devices"][0]["power"]
+
+
+def test_sparkline_averages_per_30min():
+    from meshtastic_tools.dashboard.render import _sparkline
+    samples = power_samples()
+    # Three values in the oldest interval average to 50%, the fifth level.
+    start = NOW - timedelta(hours=24)
+    samples.extend({"at": (start + timedelta(minutes=minute)).isoformat(),
+                    "battery_level": value} for minute, value in ((1, 50), (29, 100)))
+    line = _sparkline(list(reversed(samples)), now=NOW)
+    assert line == "▅" + ("▁▂▃▄▅▆▇█" * 6)[1:]
+    assert len(line) == 48
+
+
+def test_sparkline_skips_gaps_none_and_samples_outside_24h():
+    from meshtastic_tools.dashboard.render import _sparkline
+    samples = [
+        {"at": (NOW - timedelta(hours=25)).isoformat(), "battery_level": 100},
+        {"at": (NOW - timedelta(hours=24)).isoformat(), "battery_level": 0},
+        {"at": (NOW - timedelta(hours=23)).isoformat(), "battery_level": None},
+        {"at": NOW.astimezone(timezone.utc).isoformat(), "battery_level": 100},
+        {"at": (NOW + timedelta(seconds=1)).isoformat(), "battery_level": 50},
+    ]
+    assert _sparkline(samples, now=NOW) == "▁█" + " " * 46
+    assert _sparkline(samples, 1, now=NOW) == "█"
+    assert _sparkline(samples, 0, now=NOW) == ""
+
+
+def test_sparkline_separates_half_hour_boundary_and_handles_timezones():
+    from meshtastic_tools.dashboard.render import _sparkline
+    start = NOW - timedelta(hours=24)
+    boundary = start + timedelta(minutes=30)
+    samples = [
+        {"at": (boundary - timedelta(seconds=1)).isoformat(), "battery_level": 0},
+        {"at": boundary.astimezone(timezone.utc).isoformat(), "battery_level": 100},
+    ]
+    assert _sparkline(samples, now=NOW) == "▁█" + " " * 46
+
+
+def test_sparkline_empty_when_no_samples():
+    from meshtastic_tools.dashboard.render import _sparkline
+    assert _sparkline([]) == " " * 48
+    assert _sparkline([], 12) == " " * 12
+
+
+@pytest.mark.parametrize("renderer", ["rich", "text"])
+def test_power_minmax_none_shows_dash(configured, renderer):
+    data = collect(configured, device="alpha")
+    output = rich_output(data, width=160) if renderer == "rich" else render_text(data, width=160)
+    assert "min — · max —" in output
+    assert "—  (min — · max —)" in output
+    assert "[ " + " " * 48 + " ]" in output
+    assert not re.search(r"\[[█░]{50}\]", output)
+
+
+@pytest.mark.parametrize("renderer", ["rich", "text"])
+def test_battery_removed_from_device(configured, renderer):
+    data = collect(configured, device="alpha")
+    output = rich_output(data, width=160) if renderer == "rich" else render_text(data, width=160)
+    device = output.split("NODE · alpha", 1)[1].split("POWER", 1)[0]
+    assert "DEVICE" in device
+    assert "BATTERY" not in device
+    assert output.count("BATTERY") == 1
 
 
 @pytest.mark.parametrize("seconds,display", [(2.01,"2.01 s"),(75.2,"1 m 15 s"),(3601,"1 h 0 m")])
