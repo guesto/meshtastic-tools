@@ -10,7 +10,7 @@ from typing import List, Optional, Tuple
 from meshtastic_tools.core.config import StorageConfig
 from meshtastic_tools.core.exceptions import StorageError
 from meshtastic_tools.core.logging_config import get_logger
-from meshtastic_tools.logger.privacy import redact_secrets
+from meshtastic_tools.core.privacy import redact_secrets
 
 
 class StorageManager:

@@ -13,6 +13,17 @@ from meshtastic_tools.core.exceptions import ConnectionError, DeviceNotFoundErro
 from meshtastic_tools.core.logging_config import get_logger
 
 
+def _command_failure(result) -> str:
+    # Import at call time: logger.__init__ also imports device management.
+    from meshtastic_tools.core.privacy import redact_secrets
+
+    output = result.stderr.strip() or result.stdout.strip()
+    details = redact_secrets(output)
+    if len(details) > 1200:
+        details = "…" + details[-1200:]
+    return f"exit code {result.returncode}: {details or 'no stdout or stderr'}"
+
+
 @dataclass
 class DeviceInfo:
     """Information about a Meshtastic device parsed from --info output."""
@@ -228,7 +239,7 @@ class DeviceManager:
             )
             
             if result.returncode != 0:
-                error_msg = result.stderr.strip() or "Unknown error"
+                error_msg = _command_failure(result)
                 self._is_connected = False
                 self._last_check = datetime.now()
                 raise ConnectionError(
@@ -255,6 +266,8 @@ class DeviceManager:
                 f"Timeout connecting to {self.name} "
                 f"(>{self.config.connection.timeout}s)"
             )
+        except ConnectionError:
+            raise
         except Exception as e:
             self._is_connected = False
             self._last_check = datetime.now()
@@ -308,13 +321,15 @@ class DeviceManager:
             
             if result.returncode != 0:
                 raise ConnectionError(
-                    f"Command failed for {self.name}: {result.stderr.strip()}"
+                    f"Command failed for {self.name}: {_command_failure(result)}"
                 )
             
             return result
             
         except subprocess.TimeoutExpired:
             raise ConnectionError(f"Command timeout for {self.name} (>{timeout}s)")
+        except ConnectionError:
+            raise
         except Exception as e:
             raise ConnectionError(f"Command error for {self.name}: {e}")
     

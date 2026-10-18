@@ -7,7 +7,7 @@ from pathlib import Path
 
 from meshtastic_tools.core.config import StorageConfig
 from meshtastic_tools.logger.storage import StorageManager
-from meshtastic_tools.logger.privacy import redact_secrets
+from meshtastic_tools.core.privacy import redact_secrets
 
 
 class TestStorageManager:

@@ -1,12 +1,33 @@
 """Data collector for Meshtastic devices."""
 
-from datetime import datetime
+from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
 
 from meshtastic_tools.core.device import DeviceManager
 from meshtastic_tools.core.exceptions import CollectionError
 from meshtastic_tools.core.logging_config import get_logger
+from meshtastic_tools.core.metrics import MetricHistory
+from meshtastic_tools.core.snapshot import parse_snapshot
 from meshtastic_tools.logger.storage import StorageManager
+from meshtastic_tools.core.timeline import TimelineHistory
+
+
+def _record_history(kind):
+    def decorate(method):
+        @wraps(method)
+        def collect(self, *args, **kwargs):
+            directory = self.storage.device_path.parent / kind
+            history = TimelineHistory(directory, self.storage.config.max_files)
+            try:
+                path = method(self, *args, **kwargs)
+            except CollectionError:
+                history.append("error", datetime.now(timezone.utc))
+                raise
+            history.append("snapshot", datetime.now(timezone.utc))
+            return path
+        return collect
+    return decorate
 
 
 class MeshtasticCollector:
@@ -23,7 +44,18 @@ class MeshtasticCollector:
         self.device = device_manager
         self.storage = storage_manager
         self.logger = get_logger(__name__)
+
+    def _record_metrics(self, text: str) -> None:
+        """Metric caching is auxiliary and must not fail a successful collection."""
+        try:
+            snapshot = parse_snapshot(text)
+            MetricHistory(self.storage.device_path.parent).append(
+                datetime.now(timezone.utc), snapshot.battery_level, snapshot.voltage,
+            )
+        except Exception as e:
+            self.logger.warning(f"Failed to record metrics: {e}")
     
+    @_record_history("info")
     def collect_info(self) -> Path:
         """
         Collect --info data from device and save to storage.
@@ -45,6 +77,7 @@ class MeshtasticCollector:
             
             # Save the output
             filepath = self.storage.save(result.stdout, filename)
+            self._record_metrics(result.stdout)
             
             self.logger.info(
                 f"Info collected from {self.device.name}",
@@ -57,6 +90,7 @@ class MeshtasticCollector:
         except Exception as e:
             raise CollectionError(f"Failed to collect info from {self.device.name}: {e}") from e
     
+    @_record_history("telemetry")
     def collect_telemetry(self) -> Path:
         """
         Collect --request-telemetry data from device.
@@ -93,6 +127,7 @@ class MeshtasticCollector:
         except Exception as e:
             raise CollectionError(f"Failed to collect telemetry from {self.device.name}: {e}") from e
     
+    @_record_history("nodes")
     def collect_nodes(self) -> Path:
         """
         Collect --nodes data from device.
@@ -123,12 +158,14 @@ class MeshtasticCollector:
         except Exception as e:
             raise CollectionError(f"Failed to collect nodes from {self.device.name}: {e}") from e
 
+    @_record_history("position")
     def collect_position(self) -> Path:
         """Request the connected node's position and store the response."""
         try:
             info = self.device.get_info()
             result = self.device.execute_command(["--request-position", "--dest", info.node_id])
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")
-            return self.storage.save(result.stdout, f"position_{self.device.name}_{timestamp}.txt")
+            filepath = self.storage.save(result.stdout, f"position_{self.device.name}_{timestamp}.txt")
+            return filepath
         except Exception as e:
             raise CollectionError(f"Failed to collect position from {self.device.name}: {e}") from e

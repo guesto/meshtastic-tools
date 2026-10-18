@@ -9,6 +9,7 @@ from meshtastic_tools import __version__
 from meshtastic_tools.core.config import ConfigManager
 from meshtastic_tools.core.device import DeviceRegistry
 from meshtastic_tools.core.logging_config import setup_logging
+from meshtastic_tools.dashboard.cli import dashboard_app
 from meshtastic_tools.logger.cli import logger_app
 
 app = typer.Typer(
@@ -19,6 +20,7 @@ app = typer.Typer(
 
 # Add subcommands
 app.add_typer(logger_app, name="logger", help="Data logger tool")
+app.add_typer(dashboard_app, name="dashboard")
 
 # Global options
 _config_option = typer.Option(

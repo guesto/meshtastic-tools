@@ -202,3 +202,28 @@ Metadata: { "firmwareVersion": "2.7.22.96dd647", "hasWifi": true, "hasBluetooth"
             manager.get_info(force_refresh=True)
             
             assert mock_run.call_count == 2
+
+    @pytest.mark.parametrize("stderr,stdout,message", [
+        ("Connection refused", "", "Connection refused"),
+        ("", "Radio disconnected", "Radio disconnected"),
+        ("", "", "no stdout or stderr"),
+        ("Actual stderr", "other output", "Actual stderr"),
+    ])
+    def test_failed_command_keeps_exit_code_and_available_diagnostic(self, device_config, stderr, stdout, message):
+        from types import SimpleNamespace
+        with patch("subprocess.run", return_value=SimpleNamespace(returncode=7,stderr=stderr,stdout=stdout)):
+            manager=DeviceManager(device_config)
+            with pytest.raises(ConnectionError) as error:
+                manager.execute_command(["--info"])
+            assert "exit code 7" in str(error.value) and message in str(error.value)
+            assert "Command error for" not in str(error.value)
+
+    def test_failed_command_redacts_output_before_shortening_it(self, device_config):
+        from types import SimpleNamespace
+        output='x'*1500 + '{"wifiPsk":"wifi-secret","privateKey":"private-secret"}'
+        with patch("subprocess.run", return_value=SimpleNamespace(returncode=1,stderr="",stdout=output)):
+            with pytest.raises(ConnectionError) as error:
+                DeviceManager(device_config).execute_command(["--info"])
+        assert "wifi-secret" not in str(error.value) and "private-secret" not in str(error.value)
+        assert "[REDACTED]" in str(error.value)
+        assert len(str(error.value)) < 1400

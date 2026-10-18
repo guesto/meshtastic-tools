@@ -1,9 +1,35 @@
-from datetime import datetime
+import json
+import time
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from meshtastic_tools.core.exceptions import CollectionError
+from meshtastic_tools.core.timeline import TimelineHistory
 from meshtastic_tools.logger.scheduler import DeviceSchedule
+
+
+def test_record_missed_writes_utc_with_non_utc_system_timezone(tmp_path, monkeypatch):
+    now = datetime(2026, 10, 17, 12, tzinfo=timezone(timedelta(hours=5)))
+    schedule = "*/5 * * * *"
+    state = DeviceSchedule(tmp_path)
+    history = TimelineHistory(tmp_path / "info")
+    state.mark_completed(schedule, (now - timedelta(minutes=20)).timestamp(), "Asia/Yekaterinburg")
+    try:
+        with monkeypatch.context() as patch:
+            patch.setenv("TZ", "Asia/Yekaterinburg")
+            time.tzset()
+            state.record_missed(schedule, now, history, "Asia/Yekaterinburg")
+    finally:
+        time.tzset()
+
+    rows = json.loads(history.path.read_text())["events"]
+    assert [row["type"] for row in rows] == ["missing"] * 3
+    timestamps = [datetime.fromisoformat(row["at"]) for row in rows]
+    assert all(at.utcoffset() == timedelta(0) for at in timestamps)
+    assert all(row["at"].endswith("+00:00") for row in rows)
+    assert timestamps == [now - timedelta(minutes=m) for m in (15, 10, 5)]
+    assert all(event.at.utcoffset() == timedelta(0) for event in history.load())
 
 
 def test_no_early_collection_or_duplicate_across_process_invocations(tmp_path):

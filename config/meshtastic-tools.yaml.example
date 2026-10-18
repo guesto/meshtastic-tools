@@ -36,7 +36,9 @@ tools:
     storage:
       data_dir: /opt/meshtastic-tools/data/logger
       retention_days: 30
-      max_files: 50                # Shared by all collectors for each device.
+      max_files: 50                # Snapshot count limit, shared by collectors per device.
+                                  # Also the event limit per collector; null: 1000 events, 0: history off.
+                                  # null or 0 disables the snapshot count limit.
       # Optional: filename_format: "info_{device}_{timestamp}.txt"
 
     devices:

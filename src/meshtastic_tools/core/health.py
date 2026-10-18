@@ -14,8 +14,14 @@ from croniter import croniter
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from meshtastic_tools.core.exceptions import StorageError
-from meshtastic_tools.logger.privacy import redact_secrets
-from meshtastic_tools.logger.scheduler import DeviceSchedule
+from meshtastic_tools.core.privacy import redact_secrets
+
+
+def latest_slot(schedule: str, now: datetime) -> float:
+    # get_prev is exclusive: include a slot that falls exactly at now.
+    base = datetime.fromtimestamp(now.timestamp() + 0.000001, now.tzinfo)
+    slot = croniter(schedule, base).get_prev(datetime)
+    return slot.timestamp()
 
 
 def utc_now() -> datetime:
@@ -136,6 +142,15 @@ def device_status(name: str, directory: Path, enabled: bool, schedule: Optional[
                   timezone_name: str = "local") -> dict:
     """Describe the scheduled info collector; manual telemetry cannot mask its failures."""
     result = DeviceHealth(directory).load().collectors.get("info")
+    return describe_device_status(name, result, enabled, schedule, timeout, now,
+                                  grace_seconds, timezone_name)
+
+
+def describe_device_status(name: str, result: Optional[CollectionResult], enabled: bool,
+                           schedule: Optional[str], timeout: int, now: datetime,
+                           grace_seconds: Optional[int] = None,
+                           timezone_name: str = "local") -> dict:
+    """Shared health/freshness rules for already loaded records (no I/O)."""
     if timezone_name != "local":
         now = now.astimezone(ZoneInfo(timezone_name))
     next_scheduled = croniter(schedule, now).get_next(datetime) if enabled and schedule else None
@@ -143,7 +158,7 @@ def device_status(name: str, directory: Path, enabled: bool, schedule: Optional[
     # Check the newest slot whose grace has expired, rather than resetting a stale
     # warning at each new slot. This also works when timeout exceeds the interval.
     cutoff = datetime.fromtimestamp(now.timestamp() - grace - 0.000001, now.tzinfo)
-    required_slot = DeviceSchedule.latest_slot(schedule, cutoff) if enabled and schedule else None
+    required_slot = latest_slot(schedule, cutoff) if enabled and schedule else None
 
     last_success = result.last_success_at if result else None
     stale = False

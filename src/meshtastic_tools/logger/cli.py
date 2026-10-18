@@ -14,7 +14,8 @@ from meshtastic_tools.core.logging_config import get_logger
 from meshtastic_tools.logger.collector import MeshtasticCollector
 from meshtastic_tools.logger.storage import GlobalStorageManager
 from meshtastic_tools.logger.scheduler import DeviceSchedule
-from meshtastic_tools.logger.health import DeviceHealth, device_status
+from meshtastic_tools.core.timeline import TimelineHistory
+from meshtastic_tools.core.health import DeviceHealth, device_status
 from meshtastic_tools.logger.services import render_service, render_timer
 
 SYSTEMD_DIR = Path("/etc/systemd/system")
@@ -169,8 +170,13 @@ def run(
                 schedule = logger_config.get_device_schedule(device_name)
                 if not force and not state.is_due(schedule, now, logger_config.timezone):
                     continue
+                health = DeviceHealth(device_storage.device_path.parent)
+                previous = health.load().collectors.get("info")
+                state.record_missed(schedule, now, TimelineHistory(device_storage.device_path, logger_config.storage.max_files),
+                                    logger_config.timezone,
+                                    previous.last_attempt_at if previous and previous.source == "scheduled" else None)
                 collector = MeshtasticCollector(registry.get_manager(device_name), device_storage)
-                with DeviceHealth(device_storage.device_path.parent).attempt("info", "scheduled") as attempt:
+                with health.attempt("info", "scheduled") as attempt:
                     filepath = collector.collect_info()
                     attempt.collected(filepath)
                     state.mark_completed(schedule, state.latest_slot(schedule, now), logger_config.timezone)
