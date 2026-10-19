@@ -730,7 +730,7 @@ def test_sparkline_averages_per_30min():
     assert len(line) == 48
 
 
-def test_sparkline_skips_gaps_none_and_samples_outside_24h():
+def test_sparkline_preserves_gaps_and_skips_none_and_samples_outside_24h():
     from meshtastic_tools.dashboard.render import _sparkline
     samples = [
         {"at": (NOW - timedelta(hours=25)).isoformat(), "battery_level": 100},
@@ -739,9 +739,10 @@ def test_sparkline_skips_gaps_none_and_samples_outside_24h():
         {"at": NOW.astimezone(timezone.utc).isoformat(), "battery_level": 100},
         {"at": (NOW + timedelta(seconds=1)).isoformat(), "battery_level": 50},
     ]
-    assert _sparkline(samples, now=NOW) == "▁█" + " " * 46
-    assert _sparkline(samples, 1, now=NOW) == "█"
+    assert _sparkline(samples, now=NOW) == "▁" + "·" * 46 + "█"
+    assert _sparkline(samples, 1, now=NOW) == "▅"
     assert _sparkline(samples, 0, now=NOW) == ""
+    assert _sparkline(samples, -1, now=NOW) == ""
 
 
 def test_sparkline_separates_half_hour_boundary_and_handles_timezones():
@@ -752,13 +753,37 @@ def test_sparkline_separates_half_hour_boundary_and_handles_timezones():
         {"at": (boundary - timedelta(seconds=1)).isoformat(), "battery_level": 0},
         {"at": boundary.astimezone(timezone.utc).isoformat(), "battery_level": 100},
     ]
-    assert _sparkline(samples, now=NOW) == "▁█" + " " * 46
+    assert _sparkline(samples, now=NOW) == "▁█" + "·" * 46
 
 
-def test_sparkline_empty_when_no_samples():
+def test_sparkline_shows_dots_when_no_samples():
     from meshtastic_tools.dashboard.render import _sparkline
-    assert _sparkline([]) == " " * 48
-    assert _sparkline([], 12) == " " * 12
+    assert _sparkline([]) == "·" * 48
+    assert _sparkline([], 12) == "·" * 12
+
+
+def test_sparkline_shows_gaps_as_dots():
+    from meshtastic_tools.dashboard.render import _sparkline
+    now = datetime(2026, 10, 19, 0, 0, tzinfo=timezone.utc)
+    samples = [
+        {"at": "2026-10-18T01:00:00+00:00", "battery_level": 100},
+        {"at": "2026-10-18T23:00:00+00:00", "battery_level": 50},
+    ]
+    result = _sparkline(samples, 48, now=now)
+    assert len(result) == 48
+    assert result == "·" * 2 + "█" + "·" * 43 + "▅·"
+
+
+@pytest.mark.parametrize("renderer", ["rich", "text"])
+def test_power_block_has_blank_line_between_bar_and_sparkline(configured, renderer):
+    data = collect(configured, device="alpha")
+    data.devices[0]["power"].update(battery_level=50, samples=power_samples())
+    output = rich_output(data, width=160) if renderer == "rich" else render_text(data, width=160)
+    # The Rich renderer places POWER in the right column of the frame.
+    lines = [line.rsplit("│", 1)[-1].strip(" ║") for line in output.splitlines()]
+    bar_index = lines.index("[" + "█" * 25 + "░" * 25 + "]")
+    assert lines[bar_index + 1] == ""
+    assert lines[bar_index + 2] == "[ " + "▁▂▃▄▅▆▇█" * 6 + " ]"
 
 
 @pytest.mark.parametrize("renderer", ["rich", "text"])
@@ -767,7 +792,7 @@ def test_power_minmax_none_shows_dash(configured, renderer):
     output = rich_output(data, width=160) if renderer == "rich" else render_text(data, width=160)
     assert "min — · max —" in output
     assert "—  (min — · max —)" in output
-    assert "[ " + " " * 48 + " ]" in output
+    assert "[ " + "·" * 48 + " ]" in output
     assert not re.search(r"\[[█░]{50}\]", output)
 
 

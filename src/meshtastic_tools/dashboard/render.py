@@ -83,10 +83,11 @@ def _bar(percent, width):
 
 
 def _sparkline(samples: list[dict], width: int = 48, *, now: Optional[datetime] = None) -> str:
-    """Average battery per rolling 30-minute interval in the 24h ending at now."""
+    """Average battery per rolling 30-minute interval in the 24h ending at now.
+    Empty intervals are shown as '·' (gap)."""
     width = max(0, width)
-    if not samples or not width:
-        return " " * width
+    if not width:
+        return ""
     end = (now or datetime.now(timezone.utc)).timestamp()
     start = end - 24 * 60 * 60
     buckets = {}
@@ -97,13 +98,18 @@ def _sparkline(samples: list[dict], width: int = 48, *, now: Optional[datetime] 
         stamp = datetime.fromisoformat(sample["at"].replace("Z", "+00:00")).timestamp()
         if not start <= stamp <= end:
             continue
-        index = min(47, int((stamp - start) // (30 * 60)))
+        index = min(width - 1, int((stamp - start) // (30 * 60)))
         total, count = buckets.get(index, (0, 0))
         buckets[index] = (total + battery, count + 1)
     levels = "▁▂▃▄▅▆▇█"
-    points = "".join(levels[min(7, max(0, int(total / count * 8 / 100)))]
-                     for _, (total, count) in sorted(buckets.items()))
-    return points[-width:].ljust(width)
+    cells = []
+    for index in range(width):
+        if index in buckets:
+            total, count = buckets[index]
+            cells.append(levels[min(7, max(0, int(total / count * 8 / 100)))])
+        else:
+            cells.append("·")
+    return "".join(cells)
 
 
 def _clip(value, width):
@@ -271,6 +277,7 @@ def _node_column(device, now, width, omitted, bar_width):
     col.row("BATTERY", _float(battery, " %", trim=True) + " · " + _float(voltage, " V"))
     if battery is not None:
         col.row("", _bar(battery, 50))
+    col.add("")
     col.row("", "[ " + _sparkline(power["samples"], 48, now=now) + " ]")
     col.row("", "min " + _float(power["battery_min"], "%", trim=True)
             + " · max " + _float(power["battery_max"], "%", trim=True))
